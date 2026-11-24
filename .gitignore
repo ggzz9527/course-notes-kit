@@ -1,0 +1,30 @@
+# 凭据：只提交 example
+tools/llm.json
+tools/mail.json
+*.key
+.env
+
+# 素材：体积大、版权属原课程，不入库
+tools/media/
+*.mp4
+*.m4a
+*.flv
+*.srt
+*.txt.tmp
+
+# 产物：讲义由使用者自己生成
+course-notes/
+tools/tmp/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini

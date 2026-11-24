@@ -1,0 +1,148 @@
+# note-keeper preset —— 笔记整理专用（只挂 20 个工具，把每轮固定开销从 7 万 token 压到 5 千）
+#
+# 安装位置（DSH 只有这一条路会生效）：
+#   ~/.dsh/profiles/desktop/cordis.patch.yml
+#   —— 用 `- insert:` 包住本文件的内容追加进去；不是复制到 ~/.dsh/.agent-presets/
+#      （那个目录没有任何包读取，是死路）。步骤见 docs/02-安装-preset.md。
+#
+# ── 设计依据（2026-11-22 实测）──
+# 原会话 175 个工具的 schema = 247,420 字符 ≈ 70,700 token，占首步上下文的 95%。
+# 其中 mcp__cua__*（63 个）占 50,493 token = 61%，而笔记流程一次都不用。
+# 本 preset 只挂 20 个工具，schema ≈ 14,534 字符 ≈ 3,633 token。
+#
+# 结构照 preset-minimal（profile cordis.yml:1039 起）改。
+# 保留：persona / fs / fs-search / bash / jobs / skill / todo / ask / present /
+#       working-directory / compaction / time-context / agent-instructions
+# 不挂：mcp-client(cua 63)、browser(34)、mnemon(17)、logicprobe(6)、hindsight(8)、
+#       schedule(4)、team_task(4)、workflow/subagent、plan-mode、goal
+
+- id: persona
+  name: '@deepseek-ai/dsh-persona'
+  config:
+    prefix: |
+      You are a note-organizing agent for a Simulated Electronic Technology / Math
+      course-notes pipeline. You turn lecture videos into verified Chinese lecture
+      notes (讲义) with classroom screenshots.
+
+      Your workflow is fixed and mechanical — follow it, do not reinvent it:
+        fetch → 知识点卡 → 关键数字回原文核 → 挑帧 → 写讲义 → note_check → 复查 → 台账
+
+      Three rules you never break:
+      1. Never read the whole transcript into context. Use
+         tools/venv/Scripts/python.exe tools/course_digest.py, or delegate the
+         full read to a cheap subagent of YOUR choosing via the workflow tool.
+         Then grep/sed only the lines needed to verify a number.
+      2. Numbers come from the original transcript, never from a summary.
+         Every voltage, temperature coefficient, inequality and symbol must
+         trace to an srt line number.
+      3. Run tools/note_check.py before marking anything reviewed. It checks
+         word budget, figure numbering, orphan images, banned words, and
+         status-versus-review-table consistency. FAIL items must be fixed.
+
+      The notes are an organized artifact — never tell the user they learned the
+      material. Say "我整理的", not "你的笔记".
+    complete: true
+    includeRuntimeContext: false
+
+# ── 前两个工具：只给只读的两个入口，防它一口气全读进来
+# 注意：真正的"读转写"是派子智能体做的，见下面的 workflow 行。
+- id: tool-fs
+  name: '@deepseek-ai/dsh-tool-fs'
+
+# ── 文件搜索：glob / grep ──
+- id: tool-fs-search
+  name: '@deepseek-ai/dsh-tool-fs-search'
+  config:
+    sampleOverCapGlobResults: false
+
+# ── 委派：**这条流程的核心，不能省**
+#
+# 为什么必须有：流程第 2 步是"派子智能体读全篇转写、只回卡片"，
+# 原文 3.5 万 token 不进主上下文。没有 workflow 就只能自己读，直接违背设计目标。
+# 用哪个 provider/model 由使用者自己的模型配置决定（这个环节不指定型号）。
+# 成本实测：workflow 的 schema = 3,475 字符 ≈ 868 token。
+# 对比收益：省下的是每集 3.5 万 token 的原文 + 后续每步重放。
+#
+# 只挂 workflow，**不挂** subagent / subagent_fork / spawn_teammate / send_message：
+# 那四个合起来还要 1,900+ token，而"用脚本批量派活"用 workflow 一个就够。
+- id: delegation
+  name: cordis:group
+  group: true
+  isolate:
+    workflowEngine: true
+  config:
+    - id: workflow-ptc
+      name: '@deepseek-ai/dsh-workflow-ptc'
+      config:
+        provider: spawn
+    - id: tool-workflow
+      name: '@deepseek-ai/dsh-tool-workflow'
+
+# ── shell：ops_bash / ops_glob / ops_grep / ops_inspect_local_file / ops_replace ──
+- id: tool-bash
+  name: '@deepseek-ai/dsh-tool-bash'
+  disabled: !!js process.platform === 'win32'
+
+- id: tool-pwsh
+  name: '@deepseek-ai/dsh-tool-pwsh'
+  disabled: !!js process.platform !== 'win32'
+
+# ── 后台作业：转写要跑几百秒，必须能后台跑再收 ──
+- id: tool-jobs
+  name: '@deepseek-ai/dsh-tool-jobs'
+
+# ── 技能：course-selflearn 从这里加载 ──
+- id: skill-filesystem
+  name: '@deepseek-ai/dsh-skill-filesystem'
+  config:
+    includeDefaultRoots: false
+    customSkillDirs:
+      - !!js dshHomePath('skills')
+
+- id: tool-skill
+  name: '@deepseek-ai/dsh-tool-skill'
+
+# ── 待办：多步流程要跟踪 ──
+- id: tool-todo
+  name: '@deepseek-ai/dsh-tool-todo'
+
+# ── 提问：规格不清时必须问，不许猜 ──
+- id: tool-ask-user
+  name: '@deepseek-ai/dsh-tool-ask-user'
+
+# ── 交付：讲义/复查表给用户直接打开 ──
+- id: present
+  name: '@deepseek-ai/dsh-tool-present'
+
+# ── 工作目录 ──
+- id: tool-working-directory
+  name: '@deepseek-ai/dsh-tool-working-directory'
+
+# ── 压缩：转写核对会产生大工具结果，必须能压 ──
+- id: compaction
+  name: cordis:group
+  group: true
+  isolate:
+    compaction: true
+    toolResultPruner: true
+  config:
+    - id: compaction-basic
+      name: '@deepseek-ai/dsh-compaction-basic'
+    - id: command-compact
+      name: '@deepseek-ai/dsh-command-compact'
+    - id: tool-result-pruner
+      name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+      config:
+        thresholdChars: 4096
+        headChars: 2048
+        tailChars: 512
+
+# ── 时间上下文：写讲义日期要用 ──
+- id: time-context
+  name: '@deepseek-ai/dsh-time-context'
+
+# ── agent 指令文件：读工作区 AGENTS.md ──
+- id: agent-instructions
+  name: '@deepseek-ai/dsh-agent-instructions'
+  config:
+    maxBytes: 16384

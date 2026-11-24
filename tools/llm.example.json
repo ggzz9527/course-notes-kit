@@ -1,0 +1,12 @@
+{
+  "_说明": "复制成 tools/llm.json 再填你自己的。任何 OpenAI 兼容端点都行。",
+  "_示例（不是推荐，凭你自己的账号选）": [
+    "智谱 GLM：https://open.bigmodel.cn/api/paas/v4  → glm-4-flash",
+    "阿里百炼：https://dashscope.aliyuncs.com/compatible-mode/v1 → qwen-turbo",
+    "DeepSeek：https://api.deepseek.com/v1 → deepseek-chat",
+    "SiliconFlow：https://api.siliconflow.cn/v1 → Qwen/Qwen2.5-7B-Instruct"
+  ],
+  "base_url": "https://your-endpoint.example/v1",
+  "api_key": "sk-填你自己的",
+  "model": "填你账号可用的模型名"
+}
