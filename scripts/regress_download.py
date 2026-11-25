@@ -52,10 +52,31 @@ MODE = "ok"        # 当前伪造响应模式
 
 # COURSE_MEDIA / COURSE_TMP 必须在 import course_prep 之前设好——它在模块级读环境变量，
 # 晚一步就会往真实素材目录里写测试文件（那是不可接受的副作用）。
+def _ensure_dir(p, tries=8):
+    """建目录，带重试。
+
+    2026-11-26 冷启动实测：脚本每次跑完会 rmtree 掉自己的临时目录，而 Windows 上
+    刚删的目录会短暂处于 delete-pending（杀软/索引还持有句柄），紧接着重建就报
+    WinError 5。那是环境抖动，不是缺陷——判据该给出结论，不该抛 traceback。
+    """
+    import time as _t
+    last = None
+    for i in range(tries):
+        try:
+            os.makedirs(p, exist_ok=True)
+            return
+        except OSError as e:
+            last = e
+            _t.sleep(0.15 * (i + 1))
+    sys.exit("× 建不了临时目录 %s：%s\n"
+             "  修法：把临时目录挪开（换个非 Temp 的克隆位置），或等几秒重跑。"
+             % (p, last))
+
+
 os.environ["COURSE_MEDIA"] = os.path.join(WORK, "media")
 os.environ["COURSE_TMP"] = os.path.join(WORK, "tmp")
-os.makedirs(os.environ["COURSE_MEDIA"], exist_ok=True)
-os.makedirs(os.environ["COURSE_TMP"], exist_ok=True)
+_ensure_dir(os.environ["COURSE_MEDIA"])
+_ensure_dir(os.environ["COURSE_TMP"])
 
 _spec = importlib.util.spec_from_file_location("course_prep", PREP)
 _prep = importlib.util.module_from_spec(_spec)
@@ -170,8 +191,8 @@ def parts_left(d):
 def main():
     global SRC, WANT, STUB_URL, DEAD_URL
     shutil.rmtree(WORK, ignore_errors=True)
-    os.makedirs(os.environ["COURSE_MEDIA"], exist_ok=True)
-    os.makedirs(os.environ["COURSE_TMP"], exist_ok=True)
+    _ensure_dir(os.environ["COURSE_MEDIA"])
+    _ensure_dir(os.environ["COURSE_TMP"])
     print("== 下载产物完整性回归（临时目录 %s）" % WORK)
 
     # 造一个真 m4a 当源站内容；时长从 ffprobe 读回来，不写死
