@@ -90,8 +90,27 @@ python scripts/regress_frames.py
 （换视频后拿旧帧冒充、同长度换画面不重抽、无身份证的老目录直接继承）；
 自建临时目录、跑完自动删，不动你自己的素材。
 
-为什么不并进 `selfcheck.py`：selfcheck 的契约是「不联网、不下载、**不改任何文件**」，
-而抽帧回归必须真写帧——并进去就破了它的契约，下一个会话会不敢跑 selfcheck。
+改过下载相关代码（`course_prep.py` 的 `download()` / `resolve_urls()` / `pick_format()`）
+或发版之前，再跑下载回归：
+
+```bash
+python scripts/regress_download.py
+```
+
+判据：`通过 6 项 / 失败 0 项`。它守的是同一条不变量的下载版本——
+**不存在「报成功但落盘文件是残的」的可达状态**。六个场景各对应一种真实失效：
+206 少给一段、`Content-Length` 与实际 body 不符、mirror 全挂但原始直链可用、
+mirror 与直链全挂、完整文件重跑不重下、半截文件不许继承。
+
+判据落在**成品**上：体积猜不出来（低码率集和残件都能「够大」），`ffmpeg -c copy`
+对截断流也可能返回 0，只看 rc 必漏。每次成功都要 `ffprobe` 读一次时长、与
+`meta.json` 的 `duration` 比对（容差 1 s），并与上次核过的字节数
+（`<文件>.id.json`）一致。
+全程本地伪造响应（能指定状态码/分段长度/`Content-Length` 的 `http.server`）、
+不联网——真去连 B 站，判据会随对方抽风，换个节点就从 6/0 变成 3/3。
+
+为什么两个回归都不并进 `selfcheck.py`：selfcheck 的契约是「不联网、不下载、**不改任何文件**」，
+而这两个回归都必须真写文件——并进去就破了它的契约，下一个会话会不敢跑 selfcheck。
 
 ## 配置
 

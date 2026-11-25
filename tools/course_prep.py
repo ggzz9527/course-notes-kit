@@ -145,6 +145,17 @@ def fetch_meta(bv, ep, force=False):
     log(f"取 meta: {url}")
     rc, out, err = run_to_files([PY, "-m", "yt_dlp", "-J", "--no-warnings", url])
     if rc != 0:
+        # 2026-11-26：核验已有产物只需要 duration。网络挂了不该把一份完整文件判成失败，
+        # 所以取不到最新 meta 时退回盘上那份（哪怕过期）。
+        if os.path.isfile(mp):
+            try:
+                with open(mp, encoding="utf-8") as f:
+                    meta = json.load(f)
+                if meta.get("duration"):
+                    log(f"取 meta 失败，改用缓存 meta（{meta.get('title', '')[:40]}）")
+                    return meta
+            except (OSError, ValueError):
+                pass
         log("yt-dlp 取 meta 失败: " + err[-300:].decode("utf-8", "ignore"))
         return None
     meta = json.loads(out.decode("utf-8", "ignore"))
@@ -217,9 +228,39 @@ def resolve_urls(fmt):
     return None
 
 
+def _cleanup(paths):
+    """删临时产物；删不掉不算失败（下一次进来还会被 _stale_parts 清）。"""
+    for p in paths:
+        try:
+            os.remove(p)
+        except OSError:
+            pass
+
+
+def _stale_parts(dest):
+    """枚举 dest 这一族的残留：`x.part`、`x.part.0` … `x.part.N`。"""
+    d = os.path.dirname(dest) or "."
+    base = os.path.basename(dest) + ".part"
+    try:
+        names = os.listdir(d)
+    except OSError:
+        return []
+    return [os.path.join(d, n) for n in names
+            if n == base or n.startswith(base + ".")]
+
+
 def download(url, dest, workers=WORKERS):
-    """多线程 Range 分段下载；服务器不支持 Range 时退回单流。"""
+    """多线程 Range 分段下载；服务器不支持 Range 时退回单流。
+
+    判据（2026-11-26，反例见 scripts/regress_download.py）：
+        不存在「报成功但落盘文件是残的」的可达状态。
+    所以每一段都必须核对「写出去的字节数 == Content-Range 声明的字节数」，
+    单流必须核对 Content-Length；对不上就是失败，**绝不拼文件**——
+    以前丢一段也会拼出一个「看起来完整」的文件，要到转写出乱码才发现。
+    上一轮的分片先清空：workers 数变过时，旧的 `.part.4..7` 会被当成本次结果拼进去。
+    """
     tmp = dest + ".part"
+    _cleanup(_stale_parts(dest))
     head = urllib.request.Request(url, headers={**HDR, "Range": "bytes=0-0"})
     try:
         with urllib.request.urlopen(head, timeout=10) as r:
@@ -233,19 +274,7 @@ def download(url, dest, workers=WORKERS):
         total = int(m.group(1))
     if total <= 0:
         log("服务器不支持 Range，改单流下载")
-        try:
-            with urllib.request.urlopen(urllib.request.Request(url, headers=HDR),
-                                        timeout=60) as r, open(tmp, "wb") as f:
-                while True:
-                    b = r.read(1 << 18)
-                    if not b:
-                        break
-                    f.write(b)
-            os.replace(tmp, dest)
-            return True
-        except Exception as e:
-            log(f"单流下载失败: {e}")
-            return False
+        return _download_single(url, dest, tmp)
 
     chunk = total // workers + 1
     done = [0] * workers
@@ -256,10 +285,12 @@ def download(url, dest, workers=WORKERS):
         e = min(s + chunk - 1, total - 1)
         if s > e:
             return
+        want = e - s + 1
         for attempt in range(3):
             try:
                 req = urllib.request.Request(
                     url, headers={**HDR, "Range": f"bytes={s}-{e}"})
+                got = 0
                 with urllib.request.urlopen(req, timeout=60) as r, \
                         open(f"{tmp}.{i}", "wb") as f:
                     while True:
@@ -267,8 +298,12 @@ def download(url, dest, workers=WORKERS):
                         if not b:
                             break
                         f.write(b)
-                        done[i] += len(b)
-                return
+                        got += len(b)
+                        done[i] = got
+                if got == want:
+                    return
+                # 少给算失败；多给也算——Content-Range 说要 want 字节就得是 want 字节
+                log(f"  分片 {i} 第 {attempt+1} 次字节数不符: {got}/{want}")
             except Exception as ex:                       # noqa: BLE001
                 log(f"  分片 {i} 第 {attempt+1} 次失败: {type(ex).__name__}")
         errs.append(i)
@@ -283,18 +318,60 @@ def download(url, dest, workers=WORKERS):
             f"{got/1e6/max(time.time()-t0,0.001):5.2f} MB/s")
     [t.join() for t in ts]
     if errs:
-        log(f"有分片失败: {errs}")
+        log(f"有分片失败: {errs}——不拼文件")
+        _cleanup([tmp] + [f"{tmp}.{i}" for i in range(workers)])
         return False
+    written = 0
     with open(tmp, "wb") as out:
         for i in range(workers):
             pi = f"{tmp}.{i}"
             if os.path.isfile(pi):
                 with open(pi, "rb") as f:
-                    out.write(f.read())
+                    while True:
+                        b = f.read(1 << 20)
+                        if not b:
+                            break
+                        out.write(b)
+                        written += len(b)
                 os.remove(pi)
+    if written != total:
+        log(f"拼接后总字节 {written} != 预期 {total}——不落盘")
+        _cleanup([tmp])
+        return False
     os.replace(tmp, dest)
     dt = time.time() - t0
     log(f"完成 {total/1e6:.1f} MB / {dt:.1f}s = {total/1e6/dt:.2f} MB/s → {os.path.basename(dest)}")
+    return True
+
+
+def _download_single(url, dest, tmp):
+    """单流下载（服务器不支持 Range 时）。Content-Length 与实际 body 不符就算失败。"""
+    want, got = 0, 0
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, headers=HDR),
+                                    timeout=60) as r, open(tmp, "wb") as f:
+            cl = r.headers.get("Content-Length") or ""
+            want = int(cl) if cl.isdigit() else 0
+            while True:
+                b = r.read(1 << 18)
+                if not b:
+                    break
+                f.write(b)
+                got += len(b)
+    except Exception as e:
+        log(f"单流下载失败: {type(e).__name__}: {e}")
+        _cleanup([tmp])
+        return False
+    if want and got != want:
+        log(f"单流字节数不符: 实收 {got} != Content-Length {want}——不落盘")
+        _cleanup([tmp])
+        return False
+    if got <= 0:
+        log("单流下载 0 字节——服务器给了个空响应")
+        _cleanup([tmp])
+        return False
+    os.replace(tmp, dest)
+    log(f"完成 {got/1e6:.1f} MB（单流）→ {os.path.basename(dest)}")
     return True
 
 
@@ -305,38 +382,156 @@ def run_ff(args):
     return rc == 0
 
 
+DUR_TOL = 1.0   # 秒：成品容器时长与 meta.duration 允许的差
+
+
+def probe_duration(path):
+    """读容器时长（秒）；读不出来返回 None。"""
+    rc, out, err = run_to_files(
+        [FP, "-v", "error", "-show_entries", "format=duration",
+         "-of", "default=nk=1:nw=1", path])
+    if rc != 0:
+        return None
+    try:
+        d = float(out.decode("utf-8", "ignore").strip().splitlines()[0])
+    except (ValueError, IndexError):
+        return None
+    return d if d > 0 else None
+
+
+def verify_duration(path, want, tol=DUR_TOL):
+    """成品核验：容器时长与 meta.duration 相差 ≤ tol 秒才算数。
+
+    为什么不能只看 ffmpeg 的 rc：`-c copy` 对截断的 m4s **可能返回 0**，
+    产出的 audio.m4a / video.mp4 是半个文件，rc 看不出来；体积更是猜不出来。
+    判据只能落在成品本身：读一次时长。
+    """
+    if not os.path.isfile(path):
+        return False, "文件不在"
+    if os.path.getsize(path) <= 0:
+        return False, "0 字节"
+    got = probe_duration(path)
+    if got is None:
+        return False, "ffprobe 读不出时长（文件残或不是可识别的容器）"
+    if want and abs(got - want) > tol:
+        return False, "时长 %.2fs 与 meta %.2fs 差 %.2fs > %.0fs" % (
+            got, want, abs(got - want), tol)
+    return True, "时长 %.2fs" % got
+
+
+def _id_path(dest):
+    return dest + ".id.json"
+
+
+def _write_id(dest, duration, format_id=""):
+    """写下这次核过的产物身份（字节数 + 时长）。下次靠它认出「被截断/替换过」。"""
+    try:
+        with open(_id_path(dest), "w", encoding="utf-8") as f:
+            json.dump({"size": os.path.getsize(dest),
+                       "duration": round(duration or 0, 3),
+                       "format_id": format_id}, f)
+    except OSError:
+        pass
+
+
+def verify_artifact(dest, want, tol=DUR_TOL):
+    """成品判据：时长核得过 **且** 与上次核过的字节数一致。
+
+    ffprobe 的时长来自容器头——半个文件只要 moov 还在，时长照样报全长。
+    所以字节数只与**自己上次核过的记录**比，绝不拿「体积够大」当完整：
+    后者在低码率、残件、换了码率的集上都错。
+    没有身份记录时退化为只核时长（兼容旧素材），核过后补写身份。
+    """
+    ok, why = verify_duration(dest, want, tol)
+    if not ok:
+        return False, why
+    ip = _id_path(dest)
+    if os.path.isfile(ip):
+        try:
+            with open(ip, encoding="utf-8") as f:
+                rec = json.load(f)
+        except (OSError, ValueError):
+            rec = None
+        if rec and rec.get("size") and rec["size"] != os.path.getsize(dest):
+            return False, "字节数 %d != 上次核过的 %d（被截断/替换过）" % (
+                os.path.getsize(dest), rec["size"])
+    return True, why
+
+
 def cmd_meta(a):
     m = fetch_meta(a.bv, a.ep, force=a.force)
     return 0 if m else 1
 
 
-def cmd_audio(a):
-    d = media_dir(a.bv, a.ep)
-    dest = os.path.join(d, "audio.m4a")
-    if os.path.isfile(dest) and os.path.getsize(dest) > 1 << 20 and not a.force:
-        log(f"已有 {dest}（{os.path.getsize(dest)/1e6:.1f} MB），跳过")
-        return 0
-    meta = fetch_meta(a.bv, a.ep)
-    if not meta:
-        return 1
-    fmt = pick_format(meta, "audio")
+def _fetch_to(kind, d, meta, want, quality=720):
+    """下载 + 合并 + **成品核验**，落盘到 d/audio.m4a 或 d/video.mp4。
+
+    返回 (rc, dest)。rc=0 的语义只有一个：**文件在那儿，且 ffprobe 时长核过**。
+    任何一步没核过都删掉残品再返回非 0——不留「看起来完整」的半成品给下一次继承。
+    """
+    dest = os.path.join(d, "audio.m4a" if kind == "audio" else "video.mp4")
+    fmt = pick_format(meta, kind, quality)
     if not fmt:
-        log("没有音频流")
-        return 1
+        log("没有音频流" if kind == "audio" else f"没有 ≤{quality}P 的视频流")
+        return 1, dest
     url = resolve_urls(fmt)
     if not url:
         log("所有 mirror 和原始直链都连不上")
-        return 1
-    log(f"音频源 {fmt['format_id']} @ {url.split('/')[2]}")
-    tmp = os.path.join(d, "_a.m4s")
+        log("  修法：确认本机能访问 upos-*.bilivideo.com / 原始直链；"
+            "本机代理若拦了它，先关代理再跑。稍后重跑也行——每次都会重新挑源。")
+        return 1, dest
+    log(f"{'音频' if kind == 'audio' else '视频'}源 {fmt['format_id']} @ {url.split('/')[2]}")
+    tmp = os.path.join(d, "_a.m4s" if kind == "audio" else "_v.m4s")
     if not download(url, tmp):
+        _cleanup([tmp])
+        return 1, dest
+    if kind == "audio":
+        ok = run_ff(["-i", tmp, "-vn", "-c:a", "copy", dest])
+        _cleanup([tmp])
+    else:
+        atmp = os.path.join(d, "_a.m4s")
+        afmt = pick_format(meta, "audio")
+        aurl = resolve_urls(afmt) if afmt else None
+        if aurl and download(aurl, atmp):
+            ok = run_ff(["-i", tmp, "-i", atmp, "-c", "copy",
+                         "-movflags", "+faststart", dest])
+        else:
+            log("没拿到音频流，只落视频轨")
+            ok = run_ff(["-i", tmp, "-c", "copy", "-movflags", "+faststart", dest])
+        _cleanup([tmp, atmp])
+    if not ok:
+        _cleanup([dest])
+        return 1, dest
+    good, why = verify_artifact(dest, want)
+    if not good:
+        # 状态机 VERIFY 态：ffmpeg rc=0 不代表文件是完整的（-c copy 对截断流可能 rc=0）。
+        log(f"成品核验不过：{why}——删掉残品，不当成功")
+        _cleanup([dest, _id_path(dest)])
+        return 1, dest
+    _write_id(dest, probe_duration(dest) or want, fmt["format_id"])
+    log(f"{os.path.basename(dest)} 就绪: {os.path.getsize(dest)/1e6:.1f} MB（{why}）")
+    return 0, dest
+
+
+def cmd_audio(a):
+    d = media_dir(a.bv, a.ep)
+    dest = os.path.join(d, "audio.m4a")
+    meta = fetch_meta(a.bv, a.ep)
+    if not meta:
         return 1
-    ok = run_ff(["-i", tmp, "-vn", "-c:a", "copy", dest])
-    os.remove(tmp)
-    if ok:
-        log(f"音频就绪: {os.path.getsize(dest)/1e6:.1f} MB（转写只需要它，先跑 "
-            f"transcribe.py 出稿，视频等要截图时再下）")
-    return 0 if ok else 1
+    want = float(meta.get("duration") or 0)
+    if not a.force:
+        # 幂等判据不是「体积够大」，是「时长核得过」。体积判据会把半个文件当完整的。
+        good, why = verify_artifact(dest, want)
+        if good:
+            log(f"已有 {dest}（{why}），跳过")
+            return 0
+        if os.path.isfile(dest):
+            log(f"已有 {dest} 不可用（{why}）——当作残品重下")
+    rc, _ = _fetch_to("audio", d, meta, want)
+    if rc == 0:
+        log("（转写只需要它，先跑 transcribe.py 出稿，视频等要截图时再下）")
+    return rc
 
 
 def _parse_keep(s):
@@ -347,68 +542,55 @@ def _parse_keep(s):
     return out
 
 
+def _cut_clips(d, src, keep_spec):
+    """按时间段裁切（-c copy 不重编码）。返回 0 表示每段都真出了非空文件。"""
+    keep = _parse_keep(keep_spec)
+    total = 0
+    for idx, (s, e) in enumerate(keep, 1):
+        clip = os.path.join(d, f"clip{idx}_{int(s)}-{int(e)}.mp4")
+        run_ff(["-ss", str(s), "-to", str(e), "-i", src, "-c", "copy", clip])
+        if not os.path.isfile(clip) or os.path.getsize(clip) <= 0:
+            log(f"片段 {clip} 没产出——按段裁切失败")
+            return 1
+        total += os.path.getsize(clip)
+        log(f"  片段 {clip} {os.path.getsize(clip)/1e6:.1f} MB")
+    log(f"按需片段合计 {total/1e6:.1f} MB（未保留整集）")
+    return 0
+
+
 def cmd_video(a):
     d = media_dir(a.bv, a.ep)
     dest = os.path.join(d, "video.mp4")
-    if os.path.isfile(dest) and os.path.getsize(dest) > 10 << 20 and not a.force:
-        log(f"已有 {dest}（{os.path.getsize(dest)/1e6:.1f} MB），跳过")
-        return 0
     meta = fetch_meta(a.bv, a.ep)
     if not meta:
         return 1
-    fmt = pick_format(meta, "video", a.quality)
-    if not fmt:
-        log(f"没有 ≤{a.quality}P 的视频流")
-        return 1
-    url = resolve_urls(fmt)
-    if not url:
-        log("所有 mirror 和原始直链都连不上")
-        return 1
-    log(f"视频源 {fmt['format_id']} {fmt.get('height')}P @ {url.split('/')[2]}")
-    vtmp = os.path.join(d, "_v.m4s")
-    if not download(url, vtmp):
-        return 1
+    want = float(meta.get("duration") or 0)
     if a.keep:
-        # 只保留需要的片段：先合并音视频，再按段裁切（-c copy 不重编码）
-        atmp = os.path.join(d, "_a.m4s")
-        afmt = pick_format(meta, "audio")
-        aurl = resolve_urls(afmt) if afmt else None
-        if aurl and download(aurl, atmp):
-            pass
-        tmpfull = os.path.join(d, "_full.mp4")
-        if os.path.isfile(atmp):
-            run_ff(["-i", vtmp, "-i", atmp, "-c", "copy", tmpfull])
+        # --keep 的产物是片段，不是整集：不能拿「已有 video.mp4」当完成
+        good, why = verify_artifact(dest, want)
+        fresh = False
+        if good:
+            log(f"已有完整 {dest}（{why}），直接按段裁切")
         else:
-            run_ff(["-i", vtmp, "-c", "copy", tmpfull])
-        keep = _parse_keep(a.keep)
-        total = 0
-        for idx, (s, e) in enumerate(keep, 1):
-            clip = os.path.join(d, f"clip{idx}_{int(s)}-{int(e)}.mp4")
-            run_ff(["-ss", str(s), "-to", str(e), "-i", tmpfull,
-                    "-c", "copy", clip])
-            if os.path.isfile(clip):
-                total += os.path.getsize(clip)
-                log(f"  片段 {clip} {os.path.getsize(clip)/1e6:.1f} MB")
-        for f in (vtmp, atmp, tmpfull):
-            if os.path.isfile(f):
-                os.remove(f)
-        log(f"按需片段合计 {total/1e6:.1f} MB（未保留整集）")
-        return 0
-    atmp = os.path.join(d, "_a.m4s")
-    afmt = pick_format(meta, "audio")
-    aurl = resolve_urls(afmt) if afmt else None
-    ok = True
-    if aurl:
-        ok = download(aurl, atmp) and run_ff(
-            ["-i", vtmp, "-i", atmp, "-c", "copy", "-movflags", "+faststart", dest])
-        if os.path.isfile(atmp):
-            os.remove(atmp)
-    else:
-        ok = run_ff(["-i", vtmp, "-c", "copy", dest])
-    os.remove(vtmp)
-    if ok:
-        log(f"视频就绪: {os.path.getsize(dest)/1e6:.1f} MB")
-    return 0 if ok else 1
+            if os.path.isfile(dest):
+                log(f"已有 {dest} 不可用（{why}）——当作残品重下")
+            rc, dest = _fetch_to("video", d, meta, want, a.quality)
+            if rc != 0:
+                return rc
+            fresh = True
+        rc = _cut_clips(d, dest, a.keep)
+        if fresh:
+            _cleanup([dest])          # --keep 的意义就是别留整集
+        return rc
+    if not a.force:
+        good, why = verify_artifact(dest, want)
+        if good:
+            log(f"已有 {dest}（{why}），跳过")
+            return 0
+        if os.path.isfile(dest):
+            log(f"已有 {dest} 不可用（{why}）——当作残品重下")
+    rc, _ = _fetch_to("video", d, meta, want, a.quality)
+    return rc
 
 
 def _png_ok(p):

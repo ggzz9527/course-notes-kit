@@ -53,6 +53,10 @@ def bad(name, detail=""):
 def run_frames(d, env_extra=None):
     """跑 frames 子命令。沙箱禁命名管道，输出必须重定向到文件再读回。"""
     env = dict(os.environ)
+    # 2026-11-26：子进程输出重定向到文件时，Windows 上 python 按本地代码页（中文机器
+    # 是 cp936）写，而下面按 utf-8 读回来——D/E/F 三个靠字符串匹配的判据于是全部落空，
+    # 报「3 通过 / 3 失败」。判据不能随 shell 编码漂移，强制子进程写 utf-8。
+    env["PYTHONIOENCODING"] = "utf-8"
     if env_extra:
         env.update(env_extra)
     log = os.path.join(WORK, "_run.log")
