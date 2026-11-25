@@ -12,7 +12,6 @@
 用法：
   py tools/course_run.py fetch  BV1xx411c7mD 8
   py tools/course_run.py fetch  BV1xx411c7mD 8 --no-video        # 只要音频+转写
-  py tools/course_run.py fetch  BV1xx411c7mD 8 --skip-existing    # 断点续跑（默认行为）
   py tools/course_run.py shots  <集目录> 2280:crop:60,55,660,425:1.6:输出特性与预夹断 \
                                         600:::刻度示例                      # t[:crop:x1,y1,x2,y2:scale:name]
                                         2690:proj:0:两级波特图投影           # 自动框投影幕

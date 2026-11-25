@@ -887,7 +887,8 @@ ep22 我这么改，一次吞掉 **5 个图块**，`note_check` 报"引用 1 处
 - `_course.json` 里的 `terms`：转写术语词表（缺省用通用词）；
 - `_course.json` 里的 `bin`：yt-dlp / ffmpeg 路径，缺省从 PATH 找。
 
-脚本（可选，未安装时按 T0–T4 降级手工做）：`scripts/course.py`（grab / shot / at / outline / index / annotate / review-sheet）。
+**本包不带** grab / shot / at / outline / index / annotate / review-sheet 这组包装脚本，
+对应的事分别由 `course_run.py`、`course_gate.py`、`gen_lib.py` 与手工完成。
 
 ## 参考文档
 

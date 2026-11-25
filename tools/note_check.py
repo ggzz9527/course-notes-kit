@@ -234,7 +234,8 @@ def main(argv):
     # 每张图都必须有讲解块（≥30 个汉字，否则等于只贴图）
     naked = [ln for ln, blk in blocks if _cjk(blk) < 30]
     if naked:
-        errs.append(f'第 {naked} 张图下面没有讲解（少于 30 汉字＝只贴图）')
+        errs.append('图片下方讲解不足 30 汉字（只贴图不算讲）：正文第 %s 行'
+                    % ", ".join(str(x) for x in naked))
 
     # ---- 6b. 图注时间 vs 文件名时间（2026-11-23 ep14 定）
     #   文件名里 `ep14-t1400` 的 1400 有两种约定，历史产物两种都有：

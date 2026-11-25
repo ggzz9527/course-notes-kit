@@ -40,8 +40,36 @@ PROJ = os.path.dirname(ROOT)
 MEDIA = (os.environ.get("COURSE_MEDIA")
          or os.path.join(PROJ, "tools", "media", "course"))
 PY = os.environ.get("COURSE_PY") or sys.executable
-_ff = os.environ.get("COURSE_FFMPEG") or os.path.join(ROOT, "bin", "ffmpeg.exe")
-FF = _ff if os.path.exists(_ff) else "ffmpeg"
+def _resolve_tool(env_key, local_name, cmd_name):
+    """外部工具的单一来源：环境变量 > 包内 bin/ > PATH 命令名。
+
+    「工具在哪」只回答一次。以前 FF / FP 分散在三处各拼一次，答案互不一致。
+    """
+    p = os.environ.get(env_key)
+    if p:
+        return p
+    local = os.path.join(ROOT, "bin", local_name)
+    return local if os.path.exists(local) else cmd_name
+
+
+def _sibling(ff, name):
+    """从 ffmpeg 的路径推出 ffprobe：同目录 + 同扩展名；纯命令名就换名字。
+
+    2026-11-25 踩：以前是 ff.replace("ffmpeg.exe", "ffprobe.exe")。只要 ff 是
+    "ffmpeg"（按 README 装进 PATH 就是这样）或 "ffmpeg.EXE"（大写），替换就落空，
+    于是拿 ffmpeg 去跑 ffprobe 的参数，ffmpeg 报 Unrecognized option 'show_entries'。
+    判据：这条必须能处理三种形态——"ffmpeg" / "/usr/bin/ffmpeg" / "C:\\x\\ffmpeg.EXE"。
+    """
+    d, base = os.path.split(ff)
+    stem, ext = os.path.splitext(base)
+    if not stem:
+        return name
+    cand = stem.replace("ffmpeg", name) + ext
+    return os.path.join(d, cand) if d else cand
+
+
+FF = _resolve_tool("COURSE_FFMPEG", "ffmpeg.exe", "ffmpeg")
+FP = os.environ.get("COURSE_FFPROBE") or _sibling(FF, "ffprobe")
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
       "(KHTML, like Gecko) Chrome/120.0 Safari/537.36")
 HDR = {"User-Agent": UA, "Referer": "https://www.bilibili.com/"}
@@ -61,8 +89,19 @@ def run_to_files(cmd):
     os.makedirs(tmpd, exist_ok=True)
     tag = f"_prep_{os.getpid()}_{int(time.time()*1000) % 100000}"
     fo, fe = os.path.join(tmpd, tag + ".out"), os.path.join(tmpd, tag + ".err")
-    with open(fo, "wb") as o, open(fe, "wb") as e:
-        p = subprocess.run(cmd, stdout=o, stderr=e)
+    try:
+        with open(fo, "wb") as o, open(fe, "wb") as e:
+            p = subprocess.run(cmd, stdout=o, stderr=e)
+    except OSError as e:
+        # 「工具没装 / 路径写错」是使用者最常见的错误，别丢 traceback 给他。
+        # rc 用 127（shell 的 command not found 约定），错误信息走 stderr 通道回传。
+        for f_ in (fo, fe):
+            try:
+                os.remove(f_)
+            except OSError:
+                pass
+        msg = "不能执行 %s：%s" % (cmd[0], e)
+        return 127, b"", msg.encode("utf-8", "ignore")
     try:
         with open(fo, "rb") as f:
             out = f.read()
@@ -381,23 +420,48 @@ def cmd_frames(a):
     if a.at:
         times = [float(x) for x in a.at.split(",")]
     elif a.every:
-        _, dout, _ = run_to_files(
-            [FF.replace("ffmpeg.exe", "ffprobe.exe"), "-v", "error",
+        rc, dout, derr = run_to_files(
+            [FP, "-v", "error",
              "-show_entries", "format=duration", "-of", "csv=p=0", video])
-        dur = float(dout.decode().strip() or 0)
-        times = [float(t) for t in range(0, int(dur) + 1, a.every)]
+        try:
+            dur = float(dout.decode("utf-8", "ignore").strip())
+        except ValueError:
+            dur = 0.0
+        # 读不到时长必须报错退出。以前这里把失败降级成 0，range(0, 0+1) 正好给出
+        # 1 帧——「抽帧成功」但素材只有一张，下游全都照常，没有任何一处会报错。
+        if rc != 0 or dur <= 0:
+            log("ffprobe 读不到时长（rc=%d，ffprobe=%s）" % (rc, FP))
+            detail = (derr or dout).decode("utf-8", "ignore").strip()
+            if detail:
+                log("  它说：" + detail[:200])
+            log("  拒绝用「时长 0」继续——那会静默只抽 1 帧。")
+            log("  修法：确认 ffprobe 可用（设 COURSE_FFPROBE，或装进 PATH）；"
+                "或用 --at t1,t2,... 显式给时刻。")
+            return 1
+        # 末尾那一点不算：t == dur 已经越过最后一行，ffmpeg 会「成功」但不产出文件。
+        times = [float(t) for t in range(0, int(dur) + 1, a.every) if t < dur]
     else:
         log("要给 --every N 或 --at t1,t2,...")
         return 1
     log(f"抽 {len(times)} 帧（-ss 精确 seek）")
+    failed = []
     for n, t in enumerate(times, 1):
         out = os.path.join(fdir, "f_%04d.png" % int(t))
         if os.path.isfile(out) and os.path.getsize(out) > 1000:
             continue
-        run_ff(["-ss", f"{t:.3f}", "-i", video, "-frames:v", "1", out])
+        # 产物判据：rc=0 不等于出了文件。ffmpeg 越过末尾时会「成功」但什么都不写，
+        # 所以这里必须查文件本身（阈值与上面跳过已抽帧的一致）。
+        if not run_ff(["-ss", f"{t:.3f}", "-i", video, "-frames:v", "1", out]) \
+                or not (os.path.isfile(out) and os.path.getsize(out) > 1000):
+            failed.append(int(t))
         if n % 20 == 0:
             log(f"  {n}/{len(times)}")
-    log(f"帧就绪: {len([f for f in os.listdir(fdir) if f.endswith('.png')])} 张")
+    have = len([f for f in os.listdir(fdir) if f.endswith(".png")])
+    log(f"帧就绪: {have} 张")
+    if failed:
+        log("有 %d 帧没抽出来（t=%s）——不许当成功。"
+            % (len(failed), ",".join(str(t) for t in failed[:10])))
+        return 1
     return 0
 
 

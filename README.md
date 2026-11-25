@@ -70,6 +70,15 @@ pip install faster-whisper "av==13.1.0"
 
 ffmpeg：Windows 放 `tools/bin/ffmpeg.exe`，或设环境变量 `COURSE_FFMPEG`，或直接装进 PATH。
 
+装完先自检一遍：
+
+```bash
+python scripts/selfcheck.py
+```
+
+判据：`通过 7 项 / 警告 1 项 / 失败 0 项` 是正常态（那条警告是「没有 tools/llm.json」，
+只影响 `course_digest.py --llm`）。有 `失败` 就先修，别往下走。
+
 ## 配置
 
 **本工具链不绑定任何机器路径**，全部走环境变量（都有默认值）：
@@ -78,6 +87,8 @@ ffmpeg：Windows 放 `tools/bin/ffmpeg.exe`，或设环境变量 `COURSE_FFMPEG`
 | --- | --- | --- |
 | `COURSE_MEDIA` | `./tools/media/course` | 素材根目录（视频/音频/帧，不入库） |
 | `COURSE_OUT` | `./course-notes` | 讲义产物根目录 |
+| `COURSE_NOTES` | 空 | 已有讲义库根目录（给了就去这里找 `_course.json`） |
+| `COURSE_MEDIA_DIR` | 空 | 指定某一集的媒体目录（`course_gate` 找 `shots.log` 用） |
 | `COURSE_LIB` | 同 `COURSE_OUT` | 已有讲义库（`gen_lib.py` 扫这里） |
 | `COURSE_PY` | 当前解释器 | 子进程用的 python |
 | `COURSE_FFMPEG` / `COURSE_FFPROBE` | `./bin/*.exe` → PATH | ffmpeg/ffprobe |
