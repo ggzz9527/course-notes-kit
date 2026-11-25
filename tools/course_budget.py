@@ -44,23 +44,41 @@ def load(path):
 
 
 def parse_kps(txt):
-    """按 `### K<n>_xxx` 切出每节正文（到下一个 ### / ## 为止）"""
+    """切出每节正文。切分规则与 `course_verify.cmd_wc` **完全一致**（别另写一套）。
+
+    三处形态都要认（历史上真的都出现过）：
+        ### K1 · 名称        ep03 起的主流写法
+        ## 1. K1 · 名称      ep02（K 挂在二级标题上）
+        ### 4.1 子点         不带 K，留在当前段里
+
+    2026-11-25 修：以前只认 `### K1_xxx`（下划线形态），于是本命令对
+    **几乎所有集都报"正文实际切出 0 节"**——工具静默给全 0、看起来像"没超"，
+    比报错更危险。修完又发现 ep02 的 `## 1. K1 ·` 仍漏，一并补上。
+    """
     lines = txt.splitlines()
     secs = []
     cur = None
-    for s in lines:
-        m = re.match(r"^###\s+(K\d+_[^\s（(]+)", s.strip())
-        if m:
-            if cur:
-                secs.append(cur)
-            cur = {"id": m.group(1), "buf": []}
-            continue
-        if cur is not None:
-            if re.match(r"^#{2,3}\s", s):
-                secs.append(cur)
-                cur = None
+    for raw in lines:
+        t = raw.strip()
+        if t.startswith('#') and re.match(r'^#{2,4}\s', t):
+            kk = cv.kp_head(t)
+            if kk is not None:
+                cur_k = kk
+                # 同一 K 的重复标题（子点标题里也写了 K 的少数情况）不新开段
+                if not (cur and cur["id"] == "K%d" % cur_k):
+                    if cur:
+                        secs.append(cur)
+                    cur = {"id": "K%d" % cur_k, "buf": []}
                 continue
-            cur["buf"].append(s)
+            # 无 K 标题：## 是段边界，### 是子点
+            if re.match(r'^##\s', t):
+                if cur:
+                    secs.append(cur)
+                    cur = None
+                continue
+            # ### 无 K ⇒ 子点，落到下面 append
+        if cur is not None:
+            cur["buf"].append(raw)
     if cur:
         secs.append(cur)
     out = []
@@ -106,13 +124,20 @@ def cmd_plan(a):
 
 
 def cmd_used(a):
-    p = os.path.join(a.ep_dir, "10-讲义.md")
-    if not os.path.isfile(p):
-        print(f"找不到 {p}")
+    # 分篇支持（2026-11-25）：多篇按 上→中→下 顺序拼接后统一统计
+    import glob as _glob
+    cand = sorted(_glob.glob(os.path.join(a.ep_dir, "10-讲义*.md")))
+    if not cand:
+        print(f"找不到 {a.ep_dir}\\10-讲义*.md")
         return 2
-    txt = load(p)
-    m = re.search(r"knowledge_points:\s*\[(.*?)\]", txt, re.S)
-    kps = [x.strip() for x in m.group(1).split(",")] if m else []
+    if len(cand) > 1:
+        print("# 分 %d 篇：%s" % (len(cand), "、".join(os.path.basename(x) for x in cand)))
+    txt = "\n".join(load(x) for x in cand)
+    # 知识点数取**各篇并集**（2026-11-25）：拼好的 txt 里 frontmatter 会出现两次，
+    # 旧写法 `re.search` 只吃第一个，于是分篇时预算直接砍半（报 2 个点、实际 4 个）。
+    _fm = cv.merged_lecture_fm(a.ep_dir)
+    _raw = _fm.get("knowledge_points", "")
+    kps = re.findall(r"K\d+_[^,\]\s]+", _raw)
     n = len(kps) or 1
     total = n * 400
     upper = total + a.tol

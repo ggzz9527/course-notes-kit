@@ -33,7 +33,7 @@ import course_verify as cv  # noqa: E402  复用权威口径，别另写一套
 
 REQ_FM = ['course', 'episode', 'topic', 'presentation', 'discipline',
           'evidence', 'figures', 'status', 'review', 'updated']
-# 旧格式讲义没有 presentation/discipline 两列，按"降级为 warn"处理
+# 旧格式讲义没有 presentation/discipline 两列，按「降级为 warn」处理
 REQ_FM_SOFT = ['presentation', 'discipline']
 FIGCAP = re.compile(r'^>\s*图\s*(\d+)\s*[··.]')
 
@@ -95,17 +95,23 @@ def main(argv):
     a = ap.parse_args(argv)
 
     ep = a.ep_dir
-    jy = os.path.join(ep, '10-讲义.md')
-    if not os.path.isfile(jy):
-        print(f'[note_check] 找不到 {jy}')
+    parts = cv.lecture_files(ep)
+    if not parts:
+        print(f'[note_check] 找不到 {ep}\\10-讲义*.md')
         return 2
 
-    txt = io.open(jy, encoding='utf-8').read()
-    fm = cv.read_frontmatter(jy)
+    # ---- 分篇支持（2026-11-25，skill 闸门 T1）
+    # 以前只认 `10-讲义.md`，拆成 上/下 之后本脚本**一句话都不报**——
+    # 它只检查它找到的那个文件，找不到就退 2，看起来像"没问题"。
+    # 现在：frontmatter 取第一个非空的，正文按篇顺序拼接后统一统计，
+    # 图号连续性也因为拼接而自动跨篇检查。
+    fm = cv.merged_lecture_fm(ep)      # 分篇时 knowledge_points 取各篇并集
     nkp = cv.count_knowledge_points(fm)
     budget = nkp * 400
     upper = budget + a.tol
-    body = cv.strip_frontmatter(txt)
+    body = '\n'.join(cv.strip_frontmatter(io.open(p, encoding='utf-8').read())
+                     for p in parts)
+    txt = '\n'.join(io.open(p, encoding='utf-8').read() for p in parts)
     lines = body.split('\n')
 
     total, _duo, _cat = cv._count_body_cjk(lines)
@@ -157,6 +163,8 @@ def main(argv):
 
     errs, warns = [], []
     info = {}
+    if len(parts) > 1:
+        info["parts"] = [os.path.basename(p) for p in parts]
 
     # ---- 1. 总字数（带宽）
     info['cjk'] = total

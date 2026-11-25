@@ -35,7 +35,6 @@ course-notes-kit/
 │   ├── note_check.py            讲义自检（9 类）
 │   ├── gen_lib.py               生成 00-索引 / 00-课程地图 / 99-台账
 │   ├── course_rank_check.py     检验「按 green 分板书/人物」判据是否还成立
-│   ├── course_profile.py        给课程画像，决定讲义怎么变
 │   └── llm.py                   OpenAI 兼容调用（可选，用你自己的模型）
 ├── skills/course-selflearn/     讲义怎么写（SKILL.md + 4 篇 references）
 ├── preset/                      省 token 的 agent preset（可选）
@@ -91,33 +90,24 @@ provider/model 由你自己的 DSH 配置决定——**本仓库只给选型判�
 ## 课程不同，讲义怎么变（重要）
 
 同一个骨架套所有课会同时犯两种错：数学课用结论式写法，学生背下结论走不出第二步；
-电路课用长篇推导，该背的判据没背下来。所以每门课开工前先出**课程画像**：
+电路课用长篇推导，该背的判据没背下来。
 
-```bash
-python tools/course_profile.py --out course-notes \
-    --course "模拟电子技术" --discipline ee --presentation blackboard \
-    --style judgement --assessment exam --language zh
-```
+这件事**不靠一篇单独的画像文件**，而是钉进每篇讲义自己的 frontmatter——
+`presentation` 与 `discipline` 两个字段（缺了 `note_check.py` 会给 warn）：
 
-产物 `course-notes/00-课程画像.md`，它锁定四件事：
-
-| 轴 | 取值 | 决定 |
+| 字段 | 取值 | 决定 |
 | --- | --- | --- |
-| `discipline` | math / ee / physics / cs / humanities | 红线集、字数系数、自测题型 |
-| `presentation` | ppt / blackboard / mixed / handout | 谁为准、挑哪一刻截图、图怎么用 |
-| `style` | derivation / judgement / concept / practice / narrative | 每个知识点的固定小结构 |
-| `assessment` | exam / project / understanding | 骨架落点与自测形式 |
+| `discipline` | math / ee / physics / cs / humanities | 拓展点、自测题型、学科红线集 |
+| `presentation` | ppt / blackboard / mixed / handout | 以谁为准、挑哪一刻截图、图怎么用 |
 
-agent 写讲义前必须先读它，每写完一个知识点对照骨架四项；学科红线机器查不出，靠这份清单人工过。
-详见 [`docs/05-课程适配.md`](docs/05-课程适配.md)。
+写的时候按这两条自洽：**学科**决定「红线在哪、自测怎么出」；**呈现方式**决定
+「以投影为准还是以板书为准、关键帧挑哪一刻、要不要标「老师跳过」」。
+学科红线机器查不出，只能人工过一遍——所以它是判据，不是产物，没有单独文件要维护，
+也就不会出现「画像写板书、实际录的是投影」这种自相矛盾。
 
 ## 快速开始
 
 ```bash
-# 0) 先给这门课做画像（每门课一次）
-python tools/course_profile.py --out course-notes --course "模拟电子技术" \
-    --discipline ee --presentation blackboard --style judgement --assessment exam
-
 # 1) 一集课的全套素材（meta → 音频 → 转写 → 视频 → 抽帧 → 帧核验）
 python tools/course_run.py fetch BV1xx411c7mD 8
 

@@ -31,6 +31,91 @@ import re
 import subprocess
 import sys
 
+# ---------------------------------------------------------------- 讲义分篇（10-讲义*.md）
+#
+# 2026-11-25：以前所有工具都硬编码只认 `10-讲义.md`，于是拆成
+# `10-讲义-上.md` / `10-讲义-下.md` 之后，课程地图显示讲义 ❌、台账漏这一集，
+# **而 note_check 一句话都不报**（它只检查它找到的那个文件）。
+# 现在统一走这个助手：返回按「上→中→下」排好的篇列表，单篇时长度 1。
+
+LEC_RE = re.compile(r'^10-讲义(?P<suf>.*?)\.md$')
+_PART_RANK = {'': 0, '-上': 1, '-中': 2, '-下': 3}
+
+
+def lecture_files(ep_dir: str):
+    """集目录下所有讲义篇，按上→中→下排序。单篇返回 [10-讲义.md]。"""
+    if not os.path.isdir(ep_dir):
+        return []
+    found = []
+    for f in os.listdir(ep_dir):
+        m = LEC_RE.match(f)
+        if m:
+            found.append((_PART_RANK.get(m.group('suf'), 9), f))
+    found.sort()
+    return [os.path.join(ep_dir, f) for _r, f in found]
+
+
+def lecture_label(path: str) -> str:
+    """`10-讲义-上.md` → `讲义-上`；`10-讲义.md` → `讲义`"""
+    base = os.path.basename(path)[:-3]
+    return base.replace('10-', '', 1)
+
+
+def merged_lecture_fm(ep_dir: str):
+    """多篇 frontmatter 合并成一个 dict（单篇时等价于 read_frontmatter）。
+
+    合并规则一律往"更保守"走，宁可报 draft 也不假报 reviewed：
+      status          : 任一篇 draft ⇒ draft；全部 reviewed 才 reviewed
+      knowledge_points: 各篇并集，按 K 编号排序（**这是预算的分子，错不得**）
+      figures/review  : 取第一个非空
+    额外带 `_parts`（篇数）与 `_part_names`。
+    """
+    parts = lecture_files(ep_dir)
+    if not parts:
+        return {}
+    fms = [read_frontmatter(p) for p in parts]
+    out = {}
+    for d in fms:
+        for k, v in d.items():
+            if k in ('status', 'figures', 'knowledge_points', 'review'):
+                continue
+            out.setdefault(k, v)
+
+    sts = [d.get('status', '') for d in fms if d.get('status')]
+    if sts:
+        out['status'] = 'draft' if 'draft' in sts else sts[0]
+
+    for k in ('figures', 'review'):
+        for d in fms:
+            if d.get(k):
+                out[k] = d[k]
+                break
+
+    kps = []
+    for d in fms:
+        for k in re.findall(r'K\d+_[^,\]\s]+', d.get('knowledge_points', '') or ''):
+            if k not in kps:
+                kps.append(k)
+    kps.sort(key=lambda x: int(re.match(r'K(\d+)_', x).group(1)))
+    if kps:
+        out['knowledge_points'] = '[' + ', '.join(kps) + ']'
+    out['_parts'] = len(parts)
+    out['_part_names'] = parts
+    return out
+
+
+def lecture_text(ep_dir: str, strip_fm: bool = False):
+    """所有篇的正文按顺序拼起来（图号连续性靠这个）。返回 (text, parts)"""
+    parts = lecture_files(ep_dir)
+    chunks = []
+    for p in parts:
+        t = io.open(p, encoding='utf-8').read()
+        if strip_fm:
+            t = strip_frontmatter(t)
+        chunks.append(t)
+    return '\n'.join(chunks), parts
+
+
 # ---------------------------------------------------------------- 基础工具
 
 def cjk_count(s: str) -> int:
@@ -157,6 +242,22 @@ def count_knowledge_points(fm: dict) -> int:
     return len(re.findall(r'K\d+_', raw))
 
 
+# ---------------------------------------------------------------- K 段标题判据
+#
+# K<数字> 必须出现在**标题正文开头**（允许前面有序号 `1.` `2、`），
+# 不是标题中间随口一提。反例（ep01 真实存在）：
+#     `## 3. 一条时间线（把 K2–K4 串起来）`
+# 用 `re.search(r'K\d+', t)` 会把它当成 K3 段，凭空多切一节。
+_KP_HEAD = re.compile(r"^(?:\d+\s*[.、．]?\s*)?K(\d+)(?![0-9])"
+                      r"(?:[_\s·・.、:：]|$)")
+
+
+def kp_head(title: str):
+    """标题若是一个知识点开头，返回 K 编号；否则 None。"""
+    m = _KP_HEAD.match(title.lstrip('#').strip())
+    return int(m.group(1)) if m else None
+
+
 # ---------------------------------------------------------------- 图片引用
 
 _IMG_REF = re.compile(r'!\[[^\]]*\]\(([^)\s]+)\)')
@@ -174,12 +275,13 @@ def _resolve_ref(ref_path: str, ep_dir: str) -> bool:
 
 
 def scan_images(ep_dir: str):
-    """扫描集目录：讲义/知识点表里的引用 + assets/ 实际文件。
+    """扫描集目录：讲义（可能分篇）/知识点表里的引用 + assets/ 实际文件。
     返回 (refs[(path,src)], assets_files[], broken[], orphan[])"""
-    jiangyi = os.path.join(ep_dir, '10-讲义.md')
     zhishidian = os.path.join(ep_dir, '00-知识点.md')
     refs = []
-    for src, path in [('讲义', jiangyi), ('知识点表', zhishidian)]:
+    sources = [(lecture_label(p), p) for p in lecture_files(ep_dir)]
+    sources.append(('知识点表', zhishidian))
+    for src, path in sources:
         if os.path.isfile(path):
             txt = io.open(path, encoding='utf-8').read()
             for rp in find_image_refs(txt):
@@ -210,17 +312,20 @@ def scan_images(ep_dir: str):
 # ---------------------------------------------------------------- 子命令实现
 
 def cmd_wc(ep_dir: str):
-    jiangyi = os.path.join(ep_dir, '10-讲义.md')
-    if not os.path.isfile(jiangyi):
-        print(f"[wc] 找不到 {jiangyi}")
+    parts = lecture_files(ep_dir)
+    if not parts:
+        print(f"[wc] 找不到 10-讲义*.md（{ep_dir}）")
         return 1
-    txt = io.open(jiangyi, encoding='utf-8').read()
-    fm = read_frontmatter(jiangyi)
+    if len(parts) > 1:
+        print(f"[wc] 分篇 {len(parts)} 篇：" +
+              "、".join(os.path.basename(p) for p in parts))
+    fm = merged_lecture_fm(ep_dir)     # 分篇时 knowledge_points 取各篇并集
     nkp = count_knowledge_points(fm)
     budget = nkp * 400
     hard = 6000
 
-    body = strip_frontmatter(txt)
+    body, _parts = lecture_text(ep_dir, strip_fm=True)
+    txt = lecture_text(ep_dir)[0]
     lines = body.split('\n')
     total, total_duodian, _cat = _count_body_cjk(lines)
 
@@ -241,9 +346,8 @@ def cmd_wc(ep_dir: str):
     for s in lines:
         t = s.strip()
         if t.startswith('###') or t.startswith('##'):
-            m = re.search(r'K(\d+)', t)
-            if m:
-                newk = int(m.group(1))
+            newk = kp_head(t)
+            if newk is not None:
                 if newk != cur_k:
                     flush()
                     cur_k = newk
@@ -285,7 +389,8 @@ def cmd_wc(ep_dir: str):
     refs, assets, broken, orphan = scan_images(ep_dir)
 
     print(f"== wc: {os.path.basename(ep_dir)} ==")
-    print(f"字数: {total} / {budget} 字，{nkp} 个知识点（硬上限 {hard}）")
+    print(f"字数: {total} / {budget} 字，{nkp} 个知识点（硬上限 {hard}）"
+          + ("，分 %d 篇" % len(parts) if len(parts) > 1 else ""))
     print(f"status: {status}")
     print(f"单点正文: 最大 {max_body}（{max_body_name}），超400: {over400 or '无'}")
     print(f"图后逐点解读: 最大 {max_duodian}，超120: {over120 or '无'}")

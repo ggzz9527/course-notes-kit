@@ -50,13 +50,78 @@ if not os.path.isdir(BASE):
     print("用法：py gen_lib.py <库目录>   或设 COURSE_LIB")
     sys.exit(2)
 
+
+# ---- 讲义分篇（2026-11-25，skill 闸门 T2）
+# 以前这里硬编码 `10-讲义.md`：拆成 上/下 两篇之后，课程地图显示讲义 ❌、
+# 台账漏这一集——**而且不会有任何报错**，因为"文件不存在"被当成"还没写"。
+# 现在按 `10-讲义*.md` 扫，多篇合并成"这一集已完稿"。
+LEC_RE = re.compile(r"^10-讲义(.*?)\.md$")
+PART_RANK = {"": 0, "-上": 1, "-中": 2, "-下": 3}
+
+
+def lecture_parts(ep_path):
+    """返回按 上→中→下 排好的讲义篇文件名列表（可能为空）。"""
+    if not os.path.isdir(ep_path):
+        return []
+    got = []
+    for f in os.listdir(ep_path):
+        m = LEC_RE.match(f)
+        if m:
+            got.append((PART_RANK.get(m.group(1), 9), f))
+    got.sort()
+    return [f for _r, f in got]
+
+
+def merged_lecture_fm(ep_path):
+    """多篇 frontmatter 合并成一个 dict。
+
+    合并规则（都往"更保守"的方向走，宁可报 draft 也不假报 reviewed）：
+      status : 任一篇 draft ⇒ draft；全部 reviewed 才 reviewed
+      figures: 取第一个非空
+      knowledge_points: 各篇取并集，按 K 编号排序
+    返回值额外带 `_parts`（篇数）与 `_part_names`。
+    """
+    parts = lecture_parts(ep_path)
+    if not parts:
+        return {}
+    fms = [fm(os.path.join(ep_path, f)) for f in parts]
+    out = {}
+    for d in fms:
+        for k, v in d.items():
+            if k in ("status", "figures", "knowledge_points", "review"):
+                continue
+            out.setdefault(k, v)
+
+    sts = [d.get("status", "") for d in fms if d.get("status")]
+    if sts:
+        out["status"] = "draft" if "draft" in sts else sts[0]
+
+    for k in ("figures", "review"):
+        for d in fms:
+            if d.get(k):
+                out[k] = d[k]
+                break
+
+    kps = []
+    for d in fms:
+        for k in re.findall(r"K\d+_[^,\]\s]+", d.get("knowledge_points", "") or ""):
+            if k not in kps:
+                kps.append(k)
+    # 按 K 编号排序（并集后可能跨篇乱序）
+    kps.sort(key=lambda x: int(re.match(r"K(\d+)_", x).group(1)))
+    if kps:
+        out["knowledge_points"] = "[" + ", ".join(kps) + "]"
+    out["_parts"] = len(parts)
+    out["_part_names"] = parts
+    return out
+
 eps = sorted([d for d in os.listdir(BASE) if re.match(r"^ep\d\d-", d)])
 rows = []
 for d in eps:
     n = int(d[2:4])
     topic = d[5:]
     kp = fm(os.path.join(BASE, d, "00-知识点.md"))
-    lec = fm(os.path.join(BASE, d, "10-讲义.md"))
+    lec = merged_lecture_fm(os.path.join(BASE, d))
     has_lec = bool(lec)
     assets = os.path.join(BASE, d, "assets")
     imgs = sorted([f for f in os.listdir(assets)]) if os.path.isdir(assets) else []
@@ -76,9 +141,12 @@ L = ["# %s · 课程地图" % COURSE_NAME, "",
 for r in rows:
     dur = _dur_from_json().get("p%02d" % r["n"])
     durs = ("%d:%02d" % (int(dur)//60, int(dur) % 60)) if dur else "—"
+    mark = "✅" if r["has_lec"] else "❌"
+    if r["has_lec"] and r["lec"].get("_parts", 1) > 1:
+        mark = "✅(%d篇)" % r["lec"]["_parts"]
     L.append("| ep%02d | %s | %s | %s | %s | %s | %d | %d |" % (
         r["n"], r["topic"], durs,
-        "✅" if r["has_lec"] else "❌",
+        mark,
         r["lec"].get("status", "—"),
         r["lec"].get("figures", "—"),
         len(r["kps"]), len(r["imgs"])))
@@ -98,6 +166,9 @@ for r in rows:
     L.append("- status：%s" % r["lec"].get("status", "—"))
     L.append("- evidence：%s" % (r["lec"].get("evidence") or r["kp"].get("evidence") or "—"))
     L.append("- 复查表：`90-复查/ep%02d-review.md`" % r["n"])
+    if r["lec"].get("_parts", 1) > 1:
+        L.append("- 分篇（%d）：%s" % (r["lec"]["_parts"],
+                                     "、".join(r["lec"]["_part_names"])))
     if r["kps"]:
         L.append("- 知识点（%d 个）：" % len(r["kps"]))
         for k in r["kps"]:
@@ -130,6 +201,15 @@ for r in rows:
     L.append("| ep%02d | %s | %d | %d | %s |" % (
         r["n"], r["lec"].get("status", "—"), len(r["kps"]), len(r["imgs"]),
         "、".join(gaps) if gaps else "无"))
+multi = [r for r in rows if r["lec"].get("_parts", 1) > 1]
+L += ["", "## 分篇的集", ""]
+if multi:
+    L += ["| 集 | 篇数 | 文件名 |", "| --- | --- | --- |"]
+    for r in multi:
+        L.append("| ep%02d | %d | %s |" % (
+            r["n"], r["lec"]["_parts"], "、".join(r["lec"]["_part_names"])))
+else:
+    L.append("- 无（全部单篇）")
 L += ["", "## 复查未通过清单", ""]
 bad = [r for r in rows if r["lec"].get("status") == "draft"]
 if bad:

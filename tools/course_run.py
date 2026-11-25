@@ -10,11 +10,14 @@
     check   笔记自检（转调 note_check.py）+ 帧残差 + 素材清单草稿
 
 用法：
-  py tools/course_run.py fetch  BV1xx411c7mD 8                    # <BV号> <集号>
-  py tools/course_run.py fetch  BV1xx411c7mD 8 --no-video         # 只要音频+转写
-  py tools/course_run.py fetch  BV1xx411c7mD 8 --skip-existing     # 断点续跑（默认行为）
+  py tools/course_run.py fetch  BV1xx411c7mD 8
+  py tools/course_run.py fetch  BV1xx411c7mD 8 --no-video        # 只要音频+转写
+  py tools/course_run.py fetch  BV1xx411c7mD 8 --skip-existing    # 断点续跑（默认行为）
   py tools/course_run.py shots  <集目录> 2280:crop:60,55,660,425:1.6:输出特性与预夹断 \
                                         600:::刻度示例                      # t[:crop:x1,y1,x2,y2:scale:name]
+                                        2690:proj:0:两级波特图投影           # 自动框投影幕
+                                        2670:any:3:共集输出电阻              # 黑板优先，不像黑板再试投影
+  py tools/course_run.py kind   <媒体目录> [--times 2440,2690]   # 裁图前先判帧类型：投影页/板书/存疑
   py tools/course_run.py check  <集目录> [--frames-csv ...]
   py tools/course_run.py rank   <媒体目录> [--every 10] [--top 10]
   py tools/course_run.py digest <媒体目录>
@@ -41,24 +44,16 @@ import time
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 PROJ = os.path.dirname(ROOT)
-
 # 可移植配置（不绑定任何机器路径）：
 #   COURSE_MEDIA   素材根目录，默认 ./tools/media/course
 #   COURSE_OUT     讲义产物根目录，默认 ./course-notes
 #   COURSE_NOTES   已有讲义库根目录（可选；给了就去这里找 _course.json）
 #   COURSE_PY      python 解释器，默认当前解释器
-#   COURSE_FFMPEG / COURSE_FFPROBE  ffmpeg/ffprobe，默认从 PATH 找
+PY = os.environ.get("COURSE_PY") or sys.executable
 MEDIA = os.environ.get("COURSE_MEDIA") or os.path.join(PROJ, "tools", "media", "course")
 OUT = os.environ.get("COURSE_OUT") or os.path.join(PROJ, "course-notes")
 NOTES = os.environ.get("COURSE_NOTES") or ""
-PY = os.environ.get("COURSE_PY") or sys.executable
-FF = os.environ.get("COURSE_FFMPEG") or os.path.join(ROOT, "bin", "ffmpeg.exe")
-FP = os.environ.get("COURSE_FFPROBE") or os.path.join(ROOT, "bin", "ffprobe.exe")
-
-
-def _tool_or_path(explicit, name):
-    """显式路径存在就用它，否则退回 PATH 里的命令名。"""
-    return explicit if os.path.exists(explicit) else name
+MEDIA = os.path.join(PROJ, "tools", "media", "course")
 
 
 def log(msg, err=False):
@@ -284,9 +279,60 @@ def _board_box(path, thr=0.06, pad=0.07):
     bw, bh = box[2] - box[0], box[3] - box[1]
     if bw <= 0 or bh <= 0:
         return None
+    # 2026-11-25 ep26 补：太小的框一定是噪声框（ep26 的 f_1800 就被判成 4×2 px），
+    # 这种框拿去裁只会得到几个像素。真板面实测占 25%–97%，1% 的下限不会误杀。
+    if bw * bh < 0.01 * W * H:
+        return None
     if bw * bh >= 0.92 * W * H:
         return None
     return box
+
+
+def _proj_box(path, thr_r=0.20, thr_c=0.20, fill=0.50):
+    """在「投影页」帧里自动找投影幕包围盒（投影页：白/浅底、低饱和、成块矩形）。
+
+    为什么要这个（2026-11-25 ep26 踩）：`auto` 只认墨绿黑板。遇到 44:50 那种
+    「画面主体是投影页」的时刻，拿板书矩形去裁出来是一张空板，只能删掉重裁
+    —— 那就是 course_gate 的 G2（二次裁切）唯一一条 FAIL 的来源。
+
+    判据与 _board_box 正好相反：投影是**亮**的（min 通道 > 140）且**低饱和**
+    （max-min < 45）；先按行/列占比缩到幕面，再过四道几何闸。
+    返回 (x1,y1,x2,y2)；不像投影页时返回 None（调用方回退整帧）。
+
+    实测（ep26）：f_2690 → (150,180,1181,716)、f_2440 → (26,10,1002,336) 都框对；
+    f_1800 板书帧返回 None（正确回退整帧）。
+    """
+    from PIL import Image
+    import numpy as _np
+    a = _np.asarray(Image.open(path).convert("RGB")).astype(int)
+    r, g, b = a[:, :, 0], a[:, :, 1], a[:, :, 2]
+    mx = _np.maximum(_np.maximum(r, g), b)
+    mn = _np.minimum(_np.minimum(r, g), b)
+    m = (mn > 140) & ((mx - mn) < 45)
+    H, W = m.shape
+    rows, cols = m.sum(1), m.sum(0)
+    ys = _np.where(rows > W * thr_r)[0]
+    xs = _np.where(cols > H * thr_c)[0]
+    if not len(ys) or not len(xs):
+        return None
+    y0, y1, x0, x1 = int(ys.min()), int(ys.max()), int(xs.min()), int(xs.max())
+    bw, bh = x1 - x0 + 1, y1 - y0 + 1
+    if bw <= 0 or bh <= 0:
+        return None
+    # 闸 1：幕面不能几乎等于整帧（裁了等于没裁）
+    if bw * bh >= 0.92 * W * H:
+        return None
+    # 闸 2：幕面要够大（太小多半只是白纸、白衬衫、白墙的一角）
+    if bw < 0.30 * W or bh < 0.22 * H:
+        return None
+    # 闸 3：长宽比要像一块幕（16:9≈1.78 / 16:10≈1.60 / 4:3≈1.33）
+    ar = bw / float(bh)
+    if not (1.10 <= ar <= 2.60):
+        return None
+    # 闸 4：框内要"填满"亮像素（散落的白墙、天花板靠这条拒掉）
+    if m[y0:y1 + 1, x0:x1 + 1].mean() < fill:
+        return None
+    return (x0, y0, x1 + 1, y1 + 1)
 
 
 def _parse_shots(specs):
@@ -296,12 +342,15 @@ def _parse_shots(specs):
          600:::刻度示例                           → 整帧 + 名字
          2280:crop:60,55,720,480:1.6:输出特性      → 裁切 + 放大 1.6 + 名字
          2670:auto:3:共集输出电阻                  → 自动框黑板（远景帧用）+ 放大 3
+         2690:proj:0:两级波特图投影                → 自动框投影幕 + 放大到长边约 2400
+         2690:any:0:xxx                           → 先试黑板；不像黑板再试投影幕
     """
     out = []
     for s in specs:
         parts = s.split(":")
         t = float(parts[0])
         crop, scale, name, auto = None, 1.0, None, False
+        mode = None
         rest = parts[1:]
         i = 0
         while i < len(rest):
@@ -311,7 +360,11 @@ def _parse_shots(specs):
                 i += 2
                 continue
             if p == "auto":                # 自动框黑板（远景帧）
-                auto = True
+                auto, mode = True, "auto"
+                i += 1
+                continue
+            if p in ("proj", "any"):       # 自动框投影幕 / 黑板优先再投影
+                mode = p
                 i += 1
                 continue
             if not p:                      # 空段跳过
@@ -327,7 +380,7 @@ def _parse_shots(specs):
             except ValueError:
                 name = p
             i += 1
-        out.append(dict(t=t, crop=crop, scale=scale, auto=auto,
+        out.append(dict(t=t, crop=crop, scale=scale, auto=auto, mode=mode,
                         name=name or f"t{int(t)}"))
     return out
 
@@ -344,6 +397,106 @@ def _find_media(dirpath):
                 return cand
     # 兜底：按集名里的 tNNNN 猜不到，扫一遍 media/course 找含该集号的
     return None
+
+
+def _frame_stats(path):
+    """一帧的两个观测量：亮块占比 bright（投影幕）、墨绿占比 green（黑板）。
+
+    为什么只信这两个数（2026-11-25 ep26）：`green` 早就被证伪过（集间均值差 7 倍、
+    Fisher<1，见 02-工具与踩坑.md ②-A-补），不能用来判「是不是板书」；
+    但**「亮块占比」在 ep26 上是强判据**：273 帧里板书时刻 0.05–0.10、
+    两页投影 0.95/0.96，中间没有教学帧。所以用它判「这一帧是不是投影页」，
+    而不是判「有没有字」。
+    """
+    from PIL import Image
+    import numpy as _np
+    a = _np.asarray(Image.open(path).convert("RGB")).astype(int)
+    r, g, b = a[:, :, 0], a[:, :, 1], a[:, :, 2]
+    mx = _np.maximum(_np.maximum(r, g), b)
+    mn = _np.minimum(_np.minimum(r, g), b)
+    bright = float(((mn > 140) & ((mx - mn) < 45)).mean())
+    green = float(((g > r + 4) & (g > b + 4) & (g < 150)).mean())
+    return dict(w=a.shape[1], h=a.shape[0], bright=bright, green=green)
+
+
+def _kind_of(st):
+    """按亮块占比给帧类型 + 该用哪种矩形。返回 (verdict, advice)。"""
+    if st["bright"] >= 0.60:
+        return "投影页", "整帧就是幕面：别套板书矩形；要裁就用 proj 或整帧"
+    if st["bright"] <= 0.20:
+        return "板书", "用板书矩形裁（shots ... crop:x1,y1,x2,y2）"
+    return "存疑", "亮块 0.2–0.6，多半是教室全景/白墙：先 look --full 看一眼再定"
+
+
+def _runs(ts, gap=10):
+    """把时间点压成连续段：相邻间隔 <= gap 秒的合并。返回 [(lo, hi, n)]。
+
+    为什么要这个（2026-11-25 ep26）：投影页在时间轴上是「碎段」而不是整段——
+    ep26 那 26 帧散在 09:10、19:00–32:10、40:40、44:20–45:20 共 12 段。
+    逐帧列出来看不出「哪几段时间屏幕上一直是一整页课件」，压成段才能一眼发现漏截。
+    """
+    out = []
+    for t in sorted(ts):
+        if out and t - out[-1][1] <= gap:
+            out[-1][1] = t
+            out[-1][2] += 1
+        else:
+            out.append([t, t, 1])
+    return [(lo, hi, n) for lo, hi, n in out]
+
+
+def cmd_kind(a):
+    med = os.path.abspath(a.media_dir)
+    fdir = os.path.join(med, "frames")
+    if not os.path.isdir(fdir):
+        log(f"没有 frames 目录：{fdir}")
+        return 1
+    ts = []
+    if a.times.strip():
+        for p in a.times.split(","):
+            p = p.strip()
+            if not p:
+                continue
+            ts.append(int(float(p.split(":")[0]) * 60 + float(p.split(":")[1])) if ":" in p else int(float(p)))
+    else:
+        ts = sorted(int(f[2:6]) for f in os.listdir(fdir)
+                    if re.fullmatch(r"f_\d{4}\.png", f))
+    rows = []
+    for t in ts:
+        p = os.path.join(fdir, "f_%04d.png" % t)
+        if not os.path.isfile(p):
+            rows.append(dict(t=t, bright=None, green=None, kind="缺帧", advice="删掉这个时刻再派活"))
+            continue
+        st = _frame_stats(p)
+        k, ad = _kind_of(st)
+        rows.append(dict(t=t, bright=round(st["bright"], 3),
+                         green=round(st["green"], 3), kind=k, advice=ad))
+    if a.json:
+        print(json.dumps(rows, ensure_ascii=False, indent=1))
+        return 0
+    from collections import Counter
+    c = Counter(r["kind"] for r in rows)
+    print(f"# {len(rows)} 帧 · " + " / ".join(f"{k} {v}" for k, v in c.most_common()))
+    for r in rows:
+        b = "  -   " if r["bright"] is None else f"{r['bright']:.3f}"
+        g = "  -   " if r["green"] is None else f"{r['green']:.3f}"
+        print(f"  {r['t']:>5}s  bright {b}  green {g}  {r['kind']:<4}  {r['advice']}")
+    if not a.times.strip():
+        proj = [r["t"] for r in rows if r["kind"] == "投影页"]
+        if proj:
+            segs = _runs(proj)
+            print(f"\n## 投影页时间分布：{len(proj)} 帧 / {len(segs)} 段（间隔<=10s 合并）")
+            for lo, hi, n in segs:
+                if hi == lo:
+                    rng = f"{lo // 60:02d}:{lo % 60:02d}"
+                else:
+                    rng = f"{lo // 60:02d}:{lo % 60:02d}–{hi // 60:02d}:{hi % 60:02d}"
+                print(f"  {lo:>5}s – {hi:>5}s  ({rng})  {n} 帧")
+            print("  => 这些时段屏幕上就是整页课件：别用板书矩形裁，也别整段漏掉不截。")
+        else:
+            print("\n## 投影页时间分布：整片没有亮块 >=0.60 的帧（纯板书课）")
+        print("\n（全片统计：只给观测量，分类结论请只对教学时刻下）")
+    return 0
 
 
 def cmd_shots(a):
@@ -366,6 +519,7 @@ def cmd_shots(a):
         log("需要 Pillow（tools/venv 里有）")
         return 1
     made = []
+    shotlog = []
     for s in _parse_shots(a.specs):
         src = os.path.join(fdir, "f_%04d.png" % int(s["t"]))
         if not os.path.isfile(src):
@@ -373,12 +527,27 @@ def cmd_shots(a):
             continue
         im = Image.open(src)
         box = None
-        if s.get("auto"):
+        mode = s.get("mode")
+        if mode in ("auto", "any"):
             box = _board_box(src)
+            if box is None and mode == "any":
+                box = _proj_box(src)
+                if box is not None:
+                    log(f"t={int(s['t'])} 不是黑板，自动框投影幕 {box}")
             if box is None:
                 log(f"t={int(s['t'])} 没找到黑板，回退整帧")
             else:
                 log(f"t={int(s['t'])} 自动框黑板 {box}")
+        elif mode == "proj":
+            box = _proj_box(src)
+            if box is None:
+                st = _frame_stats(src)
+                if st["bright"] >= 0.60:
+                    log(f"t={int(s['t'])} 投影占满整帧（亮块 {st['bright']:.2f}），用整帧不裁")
+                else:
+                    log(f"t={int(s['t'])} 不像投影页（亮块 {st['bright']:.2f}），回退整帧")
+            else:
+                log(f"t={int(s['t'])} 自动框投影幕 {box}")
         if s["crop"]:
             box = tuple(int(x) for x in s["crop"])
         if box:
@@ -394,9 +563,30 @@ def cmd_shots(a):
         out = os.path.join(assets, f"ep{n:02d}-t{int(s['t']):04d}-{s['name']}.png")
         im.save(out)
         made.append((os.path.basename(out), im.size, os.path.getsize(out)))
+        shotlog.append({
+            "t": int(s["t"]),
+            "box": list(box) if box else [],
+            "name": s["name"],
+            "file": os.path.basename(out),
+        })
     print(f"\n生成 {len(made)} 张 → {os.path.relpath(assets, PROJ)}")
     for name, size, sz in made:
         print(f"  {name}  {size[0]}x{size[1]}  {sz/1024:.0f} KB")
+
+    # shots.log：给 course_gate 的 G2（不许二次裁切）留证据。
+    # 格式 TSV，每行一次裁切：时刻<TAB>x1,y1,x2,y2（空=整帧）<TAB>名字<TAB>输出文件名
+    if shotlog:
+        lp = os.path.join(med, "shots.log")
+        new_file = not os.path.isfile(lp)
+        with io.open(lp, "a", encoding="utf-8", newline="\n") as f:
+            if new_file:
+                f.write("# t\tbox\tname\tfile\tstamp\n")
+            stamp = time.strftime("%Y-%m-%d %H:%M:%S")
+            for r in shotlog:
+                box = ",".join(str(v) for v in r["box"])
+                f.write("%d\t%s\t%s\t%s\t%s\n"
+                        % (r["t"], box, r["name"], r["file"], stamp))
+        log("裁切记录 → %s（G2 用）" % os.path.relpath(lp, PROJ))
     if len(made) != len(a.specs):
         log(f"警告：期望 {len(a.specs)} 张，实际 {len(made)} 张")
         return 1
@@ -1057,6 +1247,12 @@ def main():
     pc.add_argument("--tol", type=int, default=None)
     pc.add_argument("--frames-csv", default=None)
     pc.set_defaults(func=cmd_check)
+
+    pk = sub.add_parser("kind", help="裁图前先判帧类型（投影页/板书/存疑），别拿错矩形")
+    pk.add_argument("media_dir")
+    pk.add_argument("--times", default="", help="逗号分隔时刻：2440,2690；不给就统计全片")
+    pk.add_argument("--json", action="store_true")
+    pk.set_defaults(func=cmd_kind)
 
     pl = sub.add_parser("look", help="读图前先裁到板面（出一张小图，别直接 read 原帧）")
     pl.add_argument("media_dir")

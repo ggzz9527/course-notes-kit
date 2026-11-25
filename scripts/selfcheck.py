@@ -127,13 +127,6 @@ else:
     warn("没有 tools/llm.json —— 只影响 course_digest.py --llm；"
          "复制 tools/llm.example.json 再填你自己的")
 
-head("6. 课程画像")
-prof = os.path.join(out, "00-课程画像.md")
-if os.path.exists(prof):
-    ok("已有课程画像：%s" % prof)
-else:
-    warn("还没有课程画像 —— 开工前先跑 course_profile.py，否则讲义没有骨架依据")
-
 print("\n" + "=" * 46)
 print("通过 %d 项 / 警告 %d 项 / 失败 %d 项" % (len(OKS), len(WARNS), len(FAILS)))
 if FAILS:
@@ -141,4 +134,4 @@ if FAILS:
     for f in FAILS:
         print("  - %s" % f)
     sys.exit(1)
-print("可以开工。先跑 course_profile.py，再跑 course_run.py fetch。")
+print("可以开工。下一步：python tools/course_run.py fetch <BV号> <集号>")
