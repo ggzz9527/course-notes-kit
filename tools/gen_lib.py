@@ -226,7 +226,7 @@ print("generated:", total, "集,", done, "有讲义")
 try:
     import hashlib as _hl
 
-    def _kit_rev():
+    def _code_rev():
         g = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".git")
         try:
             h = open(os.path.join(g, "HEAD"), encoding="utf-8").read().strip()
@@ -248,7 +248,7 @@ try:
     _fp = _hl.sha1(open(_cj, "rb").read()).hexdigest()[:12] if os.path.isfile(_cj) else ""
     json.dump({"generated_at": datetime.datetime.now().isoformat(timespec="seconds"),
                "course": _course_name(),
-               "kit_rev": _kit_rev(),
+               "code_rev": _code_rev(),
                "course_json_sha1_12": _fp,
                "episodes": total, "with_lecture": done},
               open(os.path.join(BASE, ".genlib-manifest.json"), "w", encoding="utf-8"),
