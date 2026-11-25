@@ -326,6 +326,17 @@ def main(argv):
             elif n == 0:
                 errs.append('frames.csv 里没解析到数据行')
 
+            # ---- 9b 产物身份：这批帧属于哪支视频（2026-11-25 二修）
+            #   残差只说明「时间对得上」，不说明「帧是这一集的」。同一目录换过视频时，
+            #   文件名一模一样、残差照样合格，讲义会配上别集的画面而无人报错。
+            pdir = os.path.dirname(os.path.abspath(a.frames_csv))
+            state, detail = cv.frames_identity(pdir)
+            info['frames_identity'] = state
+            if state == 'stale':
+                errs.append(f'帧不属于当前视频（{detail}）——重新抽帧再写讲义')
+            elif state == 'unknown':
+                warns.append(f'帧没有身份证，无法确认属于这一集（{detail}）')
+
     # ---- 输出
     res = dict(ok=not errs, errors=errs, warnings=warns, info=info)
     if a.json:

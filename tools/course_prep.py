@@ -64,7 +64,13 @@ def _sibling(ff, name):
     stem, ext = os.path.splitext(base)
     if not stem:
         return name
-    cand = stem.replace("ffmpeg", name) + ext
+    # 大小写不敏感：Windows 上 ffmpeg.EXE / FFMPEG.EXE 是同一支程序，而 str.replace
+    # 区分大小写——全大写时替换落空，又拿 ffmpeg 去跑 ffprobe 的参数，原 bug 原样复活。
+    if "ffmpeg" in stem.lower():
+        cand = re.sub("ffmpeg", name, stem, flags=re.IGNORECASE) + ext
+    else:
+        # 不是 ffmpeg 起名（自建 my-ff.exe 之类）：同目录换名字，保留扩展名
+        cand = name + ext
     return os.path.join(d, cand) if d else cand
 
 
@@ -405,6 +411,22 @@ def cmd_video(a):
     return 0 if ok else 1
 
 
+def _png_ok(p):
+    """产物判据：真出了一张 PNG，而不是「体积够大」。
+
+    2026-11-25 二修：原来是 getsize > 1000。但低熵画面压出来很小——纯红 320x240
+    只有 799 字节、720P 纯白 4.3 KB，合法帧被误判成「没抽出来」，整集抽帧 exit 1。
+    体积猜不出来，只能看文件头：PNG 签名 8 字节，对得上就是真帧（截断/零字节对不上）。
+    """
+    try:
+        if os.path.getsize(p) <= 0:
+            return False
+        with open(p, "rb") as f:
+            return f.read(8) == b"\x89PNG\r\n\x1a\n"
+    except OSError:
+        return False
+
+
 def cmd_frames(a):
     d = a.dir if os.path.isabs(a.dir) else os.path.join(PROJ, a.dir)
     video = os.path.join(d, "video.mp4")
@@ -417,6 +439,32 @@ def cmd_frames(a):
         log(f"用片段抽帧: {os.path.basename(video)}")
     fdir = os.path.join(d, "frames")
     os.makedirs(fdir, exist_ok=True)
+
+    # 产物身份（2026-11-25 二修）：只判「本次调用返回值」不够。
+    # 目录里可能躺着上一支视频的帧，文件名一模一样，于是「抽 1 帧」报出「3 张 / exit 0」。
+    # 判据：帧必须有身份证。抽帧时把源视频（名/大小/mtime）写进 .source.json，
+    # 进来先对身份证；对不上（含「有图但没身份证」）就整目录作废重抽。
+    src = {"video": os.path.basename(video),
+           "size": os.path.getsize(video),
+           "mtime": int(os.path.getmtime(video))}
+    man = os.path.join(fdir, ".source.json")
+    old = None
+    if os.path.isfile(man):
+        try:
+            with open(man, encoding="utf-8") as f:
+                old = json.load(f)
+        except (OSError, ValueError):
+            old = None
+    stale = [f for f in os.listdir(fdir) if f.endswith(".png")]
+    if stale and old != src:
+        why = "源视频变了" if old else "没有身份文件的旧帧（归属未知）"
+        log(f"作废旧帧 {len(stale)} 张（{why}）")
+        for f in stale:
+            try:
+                os.remove(os.path.join(fdir, f))
+            except OSError as e:
+                log(f"  删不掉 {f}：{e}——请手工清空 {fdir} 再跑")
+                return 1
     if a.at:
         times = [float(x) for x in a.at.split(",")]
     elif a.every:
@@ -444,23 +492,33 @@ def cmd_frames(a):
         log("要给 --every N 或 --at t1,t2,...")
         return 1
     log(f"抽 {len(times)} 帧（-ss 精确 seek）")
-    failed = []
+    failed, written = [], 0
     for n, t in enumerate(times, 1):
         out = os.path.join(fdir, "f_%04d.png" % int(t))
-        if os.path.isfile(out) and os.path.getsize(out) > 1000:
+        if _png_ok(out):
             continue
         # 产物判据：rc=0 不等于出了文件。ffmpeg 越过末尾时会「成功」但什么都不写，
         # 所以这里必须查文件本身（阈值与上面跳过已抽帧的一致）。
         if not run_ff(["-ss", f"{t:.3f}", "-i", video, "-frames:v", "1", out]) \
-                or not (os.path.isfile(out) and os.path.getsize(out) > 1000):
+                or not _png_ok(out):
             failed.append(int(t))
+        else:
+            written += 1
         if n % 20 == 0:
             log(f"  {n}/{len(times)}")
-    have = len([f for f in os.listdir(fdir) if f.endswith(".png")])
-    log(f"帧就绪: {have} 张")
     if failed:
         log("有 %d 帧没抽出来（t=%s）——不许当成功。"
             % (len(failed), ",".join(str(t) for t in failed[:10])))
+        return 1
+    # 收尾：身份对上了才准写身份证、才准报就绪。
+    # 这是模型验证过的唯一安全路径——「报成功」这一步本身必须带条件。
+    with open(man, "w", encoding="utf-8") as f:
+        json.dump(src, f, ensure_ascii=False)
+    have = len([f for f in os.listdir(fdir) if f.endswith(".png")])
+    expect = len({int(t) for t in times})
+    log(f"帧就绪: {have} 张（本次新抽 {written} 张）")
+    if have < expect:
+        log("  目录里只有 %d 张，少于该有的 %d 张——不许当成功。" % (have, expect))
         return 1
     return 0
 

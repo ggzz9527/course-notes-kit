@@ -26,6 +26,7 @@ course_verify.py —— 讲义机械项核验工具（验收/爬课/讲稿共用
 
 import argparse
 import io
+import json
 import os
 import re
 import subprocess
@@ -272,6 +273,48 @@ def _resolve_ref(ref_path: str, ep_dir: str) -> bool:
     # ref_path 形如 assets/xxx.png（相对集目录）
     p = os.path.normpath(os.path.join(ep_dir, ref_path))
     return os.path.isfile(p)
+
+
+def frames_identity(pdir: str):
+    """这批帧属于哪支视频？（产物身份，2026-11-25 二修）
+
+    判据不是「frames/ 里有没有 png」，而是「png 是不是这支视频的」。
+    身份证 = frames/.source.json（course_prep.py frames 抽帧时写入的源视频名/大小/mtime）。
+    返回 (state, detail)：
+      none         目录里没有帧
+      ok           身份对得上
+      stale        对不上 —— 帧属于另一支视频，讲义会配错画面而无人报错
+      unknown      有帧但没身份证（旧目录），无法判定
+      unverifiable 有身份证但目录里没有视频可比
+    """
+    fdir = os.path.join(pdir, "frames")
+    if not os.path.isdir(fdir):
+        return "none", "没有 frames/ 目录"
+    pngs = [f for f in os.listdir(fdir) if f.endswith(".png")]
+    if not pngs:
+        return "none", "frames/ 里没有 png"
+    man = os.path.join(fdir, ".source.json")
+    if not os.path.isfile(man):
+        return "unknown", "%d 张帧没有 .source.json（旧目录，归属未知）" % len(pngs)
+    try:
+        with io.open(man, encoding="utf-8") as f:
+            src = json.load(f)
+    except (OSError, ValueError) as e:
+        return "unknown", ".source.json 读不出来（%s）" % e
+    video = os.path.join(pdir, "video.mp4")
+    if not os.path.isfile(video):
+        clips = [f for f in os.listdir(pdir) if f.startswith("clip") and f.endswith(".mp4")]
+        if not clips:
+            return "unverifiable", "有身份证，但目录里没有 video.mp4/clip*.mp4 可对"
+        video = os.path.join(pdir, sorted(clips)[0])
+    cur = {"video": os.path.basename(video),
+           "size": os.path.getsize(video),
+           "mtime": int(os.path.getmtime(video))}
+    if cur != src:
+        return "stale", ("帧属于 %s（%s 字节），当前视频是 %s（%s 字节）"
+                         % (src.get("video"), src.get("size"),
+                            cur["video"], cur["size"]))
+    return "ok", "%d 张帧，源 %s" % (len(pngs), cur["video"])
 
 
 def scan_images(ep_dir: str):

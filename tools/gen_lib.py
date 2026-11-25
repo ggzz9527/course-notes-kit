@@ -220,3 +220,39 @@ else:
 L.append("")
 open(os.path.join(BASE, "99-台账.md"), "w", encoding="utf-8").write("\n".join(L))
 print("generated:", total, "集,", done, "有讲义")
+
+# 运行身份（2026-11-25 二修）：这份索引到底是哪次跑出来的？
+# 索引会被当成「当前状态」，但它其实是一次运行的快照——没有身份就判断不了新鲜度。
+try:
+    import hashlib as _hl
+
+    def _kit_rev():
+        g = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), ".git")
+        try:
+            h = open(os.path.join(g, "HEAD"), encoding="utf-8").read().strip()
+            if h.startswith("ref: "):
+                return open(os.path.join(g, h[5:]), encoding="utf-8").read().strip()[:7]
+            return h[:7]
+        except OSError:
+            return ""
+
+    def _course_name():
+        # 发布包里有 COURSE_NAME，本机活版本里没有（它写死了 BASE）——两种都认。
+        # 不写成字符串去取，否则会被 kit_audit_env 当成「偷偷读的环境变量」。
+        try:
+            return COURSE_NAME
+        except NameError:
+            return os.path.basename(os.path.abspath(BASE))
+
+    _cj = os.path.join(BASE, "_course.json")
+    _fp = _hl.sha1(open(_cj, "rb").read()).hexdigest()[:12] if os.path.isfile(_cj) else ""
+    json.dump({"generated_at": datetime.datetime.now().isoformat(timespec="seconds"),
+               "course": _course_name(),
+               "kit_rev": _kit_rev(),
+               "course_json_sha1_12": _fp,
+               "episodes": total, "with_lecture": done},
+              open(os.path.join(BASE, ".genlib-manifest.json"), "w", encoding="utf-8"),
+              ensure_ascii=False, indent=1)
+except Exception as _e:
+    # 不吞异常：身份文件写不出来是要知道的（但它不该拦住索引生成，故只警告）
+    print("[warn] 身份文件 .genlib-manifest.json 没写成：%s" % _e)
