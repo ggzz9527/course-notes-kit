@@ -89,7 +89,16 @@ def parse_times(spec):
 def cmd_times(a):
     fs = _frames(a.media_dir)
     if not fs:
-        print("[gate] %s 下没有 frames/，先跑 course_run.py fetch" % a.media_dir)
+        # 2026-11-26 真课自检改：原来一律说「没有 frames/」，而旧素材其实有
+        # frames/、只是按帧序号命名（f0001.jpg）。帧序号不是秒，本工具按
+        # f_<秒>.png 解析，读不了它——报「没有 frames/」会让人去重下素材，白跑。
+        frames_dir = os.path.join(a.media_dir, "frames")
+        if os.path.isdir(frames_dir) and os.listdir(frames_dir):
+            print("[gate] %s/frames 里有文件，但没有 f_<秒>.png：本工具按「帧名=秒」解析。" % a.media_dir)
+            print("       旧素材按帧序号命名（f0001.jpg），序号不是秒，读不了；")
+            print("       修法：用 course_prep.py 按时间点重抽（新布局），或继续用旧流程手工挑帧。")
+        else:
+            print("[gate] %s 下没有 frames/，先跑 course_run.py fetch" % a.media_dir)
         return 1
     last = fs[-1][0]
     have = set(t for t, _ in fs)
@@ -345,7 +354,7 @@ def cmd_rects(a):
     #   10s → 抓出 2 对真重裁（t2050 两次、t2390↔t2400），0 误报
     #   30s → 抓出 4 对，多出的 t2620↔t2600、t2390↔t2360 是不同板面（误报）
     # 别往大调：宁漏不误报，误报会让人习惯性忽略这条闸门。
-    tight = a.tight          # 默认 30s：这个范围内两次裁切，基本就是重裁同一张图
+    tight = a.tight          # 默认 10s（ep23 真值校准；30s 会多出跨板面的误报）
     near_pair = []
     for i in range(len(rows)):
         for j in range(i + 1, len(rows)):
@@ -517,7 +526,7 @@ def main():
     p.add_argument("ep_dir")
     p.add_argument("--shots-log", default=None)
     p.add_argument("--near", type=int, default=60, help="（保留）宽松观察阈值")
-    p.add_argument("--tight", type=int, default=30, help="重裁判定阈值（秒，默认 10；ep23 真值校准）")
+    p.add_argument("--tight", type=int, default=10, help="重裁判定阈值（秒，默认 10；ep23 真值校准）")
     p.set_defaults(func=cmd_rects)
 
     p = sub.add_parser("parts", help="G5：≥15 个知识点必须拆篇")
