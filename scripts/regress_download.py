@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-"""regress_download.py —— 下载「产物完整性」回归（6 个场景，全自动，不联网）
+"""regress_download.py —— 下载「产物完整性」回归（8 个场景，全自动，不联网）
 
 为什么不塞进 selfcheck.py：selfcheck 的契约写明「不联网、不下载、**不改任何文件**」，
 而下载回归必须真写文件。塞进去就破了它的契约，下一个会话会不敢跑 selfcheck。
@@ -10,16 +10,18 @@ done-needs-verify / done-no-residue / always-terminates）：
     不存在「报了成功但落盘文件是残的」的可达状态
 反例是上一轮被打回的那一版——只在下载时守（分片长度），而 `ffmpeg -c copy`
 对截断流**可能 rc=0**，于是三步就能「报成功但文件是残的」：
-    INIT --start--> DOWNLOAD --dl_ok--> REMUX --ff_corrupt--> DONE
+    INIT →(start)→ DOWNLOAD →(dl_ok)→ REMUX →(ff_corrupt)→ DONE
 所以判据必须落在**成品**上：每次成功都要 ffprobe 读一次时长、与 meta.json 的
 duration 比对（容差 1 s），并且与上次核过的字节数一致（`<dest>.id.json`）。
 体积猜不出来：真实 720P 与低码率集差一个数量级，截断件也能「够大」。
 
 判据必须能失败：下面每个 FAIL 场景都对应一种真实失效——
-206 少给一段、Content-Length 不符、mirror 全挂、全挂、残品冒充完整、残渣继承。
+206 少给一段、Content-Length 不符、mirror 全挂、全挂、残品冒充完整、残渣继承、
+`--keep` 拿整集当完成（老代码遇到大文件直接 return 0，一个片段都不产）、
+`--keep` 继承残整集。
 
 为什么全用本地伪造响应（http.server）：真去连 B 站，判据会随对方抽风而飘，
-换个节点就从 6/0 变成 3/3，那种回归比没有还坏。
+换个节点就从全绿变成一堆红，那种回归比没有还坏。
 
 用法：
   python scripts/regress_download.py
@@ -111,8 +113,11 @@ class Stub(http.server.BaseHTTPRequestHandler):
     ok       —— 206 分段，Content-Range 与 body 一致
     short    —— 206，Content-Range 声明的字节数 > 实际 body（少给一段）
     badcl    —— 不支持 Range（回 200），Content-Length 比实际 body 大
+
+    按路径分发：`/media.m4s` 音频、`/video.m4s` 视频。--keep 那两个场景要音视频
+    都能下，否则测不到合并那一步。
     """
-    body = b""
+    bodies = {}
     mode = "ok"
     hits = 0
 
@@ -121,18 +126,24 @@ class Stub(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self):
         type(self).hits += 1
-        total = len(Stub.body)
+        body = Stub.bodies.get(self.path)
+        if body is None:
+            self.send_response(404)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
+        total = len(body)
         rng = self.headers.get("Range")
         if Stub.mode == "badcl":
             self.send_response(200)
             self.send_header("Content-Length", str(total + 5000))
             self.end_headers()
-            self.wfile.write(Stub.body)
+            self.wfile.write(body)
             self.close_connection = True
             return
         if rng:
             s, e = _parse_range(rng, total)
-            data = Stub.body[s:e + 1]
+            data = body[s:e + 1]
             if Stub.mode == "short":
                 data = data[:max(1, len(data) // 2)]
             self.send_response(206)
@@ -144,7 +155,7 @@ class Stub(http.server.BaseHTTPRequestHandler):
             self.send_response(200)
             self.send_header("Content-Length", str(total))
             self.end_headers()
-            self.wfile.write(Stub.body)
+            self.wfile.write(body)
 
 
 def free_port():
@@ -158,7 +169,17 @@ def free_port():
 SRC = ""        # 本地造的真 m4a，当作源站 body
 WANT = 0.0      # 它的真实时长，等于 meta.duration
 STUB_URL = ""
+STUB_VURL = ""
 DEAD_URL = ""
+META = {}
+
+
+def quiet(fn, *a, **kw):
+    """跑一个会打日志的函数，把输出收走；返回 (结果, 输出)。"""
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        r = fn(*a, **kw)
+    return r, buf.getvalue()
 
 
 def run_audio():
@@ -167,14 +188,18 @@ def run_audio():
     fetch_meta 必须挡掉：它背后是 yt-dlp 连 B 站。这里换成固定 meta，
     判据只考下载/核验这一段，不考「能不能取到 meta」。
     """
-    buf = io.StringIO()
 
     class NS:
         bv, ep, force = BV, EP, False
 
-    with contextlib.redirect_stdout(buf):
-        rc = _prep.cmd_audio(NS)
-    return rc, buf.getvalue()
+    return quiet(_prep.cmd_audio, NS)
+
+
+def run_video(keep=None):
+    """跑一次 video 子命令；keep=None 是整集模式，'0-2' 是 --keep 模式。"""
+    ns = type("NS", (), {})()
+    ns.bv, ns.ep, ns.force, ns.quality, ns.keep = BV, EP, False, 720, keep
+    return quiet(_prep.cmd_video, ns)
 
 
 def fresh_dir():
@@ -188,41 +213,65 @@ def parts_left(d):
             if ".part" in n or n.startswith("_")]
 
 
+def _tail(text, n=1):
+    """取日志最后 n 行非空内容——失败时把原因带进判据输出，别只报一个 rc。"""
+    lines = [x.strip() for x in (text or "").splitlines() if x.strip()]
+    return "｜".join(lines[-n:]) if lines else ""
+
+
 def main():
-    global SRC, WANT, STUB_URL, DEAD_URL
+    global SRC, WANT, STUB_URL, STUB_VURL, DEAD_URL
     shutil.rmtree(WORK, ignore_errors=True)
     _ensure_dir(os.environ["COURSE_MEDIA"])
     _ensure_dir(os.environ["COURSE_TMP"])
     print("== 下载产物完整性回归（临时目录 %s）" % WORK)
 
-    # 造一个真 m4a 当源站内容；时长从 ffprobe 读回来，不写死
+    # 造真音频 + 真视频当源站内容；时长从 ffprobe 读回来，不写死
     SRC = os.path.join(WORK, "src.m4a")
-    p = subprocess.run([FFMPEG, "-v", "error", "-f", "lavfi",
-                        "-i", "sine=frequency=440:duration=%d" % DUR,
-                        "-c:a", "aac", "-b:a", "32k", "-y", SRC],
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    if p.returncode != 0 or not os.path.isfile(SRC):
-        raise SystemExit("× 造测试音频失败（ffmpeg rc=%d）" % p.returncode)
+    VID = os.path.join(WORK, "src.mp4")
+    for path, args, what in (
+        (SRC, ["-f", "lavfi", "-i", "sine=frequency=440:duration=%d" % DUR,
+               "-c:a", "aac", "-b:a", "32k"], "音频"),
+        (VID, ["-f", "lavfi", "-i", "testsrc=size=160x120:rate=10:duration=%d" % DUR,
+               "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p"],
+         "视频"),
+    ):
+        p = subprocess.run([FFMPEG, "-v", "error"] + args + ["-y", path],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if p.returncode != 0 or not os.path.isfile(path):
+            raise SystemExit("× 造测试%s失败（ffmpeg rc=%d）" % (what, p.returncode))
     with open(SRC, "rb") as f:
-        Stub.body = f.read()
+        Stub.bodies["/media.m4s"] = f.read()
+    with open(VID, "rb") as f:
+        Stub.bodies["/video.m4s"] = f.read()
     WANT = _prep.probe_duration(SRC)
     if not WANT:
         raise SystemExit("× ffprobe 读不出测试音频时长")
+    vdur = _prep.probe_duration(VID)
+    if not vdur or abs(vdur - WANT) > 0.2:
+        # 音视频时长对不上，--keep 那两个场景就分不清是「合并错了」还是「下载错了」
+        raise SystemExit("× 测试音视频时长对不上（%.2f vs %.2f）" % (WANT, vdur or 0))
 
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Stub)
     srv.daemon_threads = True
     threading.Thread(target=srv.serve_forever, daemon=True).start()
     base = "http://127.0.0.1:%d" % srv.server_address[1]
     STUB_URL = base + "/media.m4s"
+    STUB_VURL = base + "/video.m4s"
     DEAD_URL = "http://127.0.0.1:%d/media.m4s" % free_port()
 
     # mirror 一律指向死端口：既保证「mirror 全挂 → 回退原始直链」这条路每个场景都走一遍，
     # 也保证这个脚本绝不会真的去连 upos-*.bilivideo.com。
     _prep.MIRRORS = ["127.0.0.1:%d" % free_port()]
-    _prep.fetch_meta = lambda bv, ep, force=False: {
+    META.update({
         "duration": WANT, "title": "regress", "_at": 0,
-        "formats": [{"format_id": "30216", "url": STUB_URL,
-                     "vcodec": "none", "filesize": len(Stub.body)}]}
+        "formats": [
+            {"format_id": "30216", "url": STUB_URL, "vcodec": "none",
+             "filesize": len(Stub.bodies["/media.m4s"])},
+            {"format_id": "30064", "url": STUB_VURL, "vcodec": "avc1",
+             "height": 720, "filesize": len(Stub.bodies["/video.m4s"])},
+        ]})
+    _prep.fetch_meta = lambda bv, ep, force=False: META
 
     try:
         # A 206 分段少给一段：body 比 Content-Range 短 → 必须失败，不许拼出「看起来完整」
@@ -309,6 +358,54 @@ def main():
                 "F 半截文件 → 识别为残重下",
                 "rc=%d %s 大小复原=%s 残渣=%s"
                 % (rc, why, os.path.getsize(dest) == full_size, left or "无"))
+
+        # G --keep + 已有完整整集 → 只裁片段，不重下
+        #   守的是「--keep 的产物是片段，不是整集」：老代码遇到大于阈值的 video.mp4
+        #   直接 return 0，一个片段都不产，照样报成功——和 A/B 是同一类谎报，只是入口不同。
+        Stub.mode, Stub.hits = "ok", 0
+        d = fresh_dir()
+        vdest = os.path.join(d, "video.mp4")
+        (rc0, _vd), vlog = quiet(_prep._fetch_to, "video", d, META, WANT, 720)
+        vready = rc0 == 0 and os.path.isfile(vdest)
+        if vready:
+            Stub.hits = 0
+            rc, out = run_video("0-2")
+            clip = os.path.join(d, "clip1_0-2.mp4")
+            (ok if rc == 0 and Stub.hits == 0 and os.path.isfile(clip)
+             and os.path.getsize(clip) > 0 and os.path.isfile(vdest) else bad)(
+                "G --keep 已有整集 → 只裁不重下",
+                "rc=%d 请求数=%d 出片段=%s" % (rc, Stub.hits, os.path.isfile(clip)))
+        else:
+            bad("G --keep 已有整集 → 只裁不重下",
+                "整集没下成功 rc=%d｜%s" % (rc0, _tail(vlog)))
+
+        # H --keep + 残整集 → 识别为残、重下、裁片段，且不把整集留在盘上
+        #   （--keep 的意义就是别留整集；重下过的那份要清掉，但不能连片段一起清）
+        Stub.mode, Stub.hits = "ok", 0
+        if not vready:
+            bad("H --keep 残整集 → 重下再裁", "依赖 G 的产物，G 已失败")
+        else:
+            d = fresh_dir()
+            vdest = os.path.join(d, "video.mp4")
+            (rc0, _vd), vlog = quiet(_prep._fetch_to, "video", d, META, WANT, 720)
+            full = os.path.getsize(vdest) if os.path.isfile(vdest) else 0
+            if rc0 != 0 or not full:
+                bad("H --keep 残整集 → 重下再裁",
+                    "整集没下成功 rc=%d｜%s" % (rc0, _tail(vlog)))
+            else:
+                with open(vdest, "rb") as f:
+                    head = f.read(max(1024, full // 3))
+                with open(vdest, "wb") as f:      # 就地截断成残整集
+                    f.write(head)
+                Stub.hits = 0
+                rc, out = run_video("0-2")
+                clip = os.path.join(d, "clip1_0-2.mp4")
+                (ok if rc == 0 and Stub.hits > 0 and os.path.isfile(clip)
+                 and os.path.getsize(clip) > 0 and not os.path.isfile(vdest) else bad)(
+                    "H --keep 残整集 → 重下再裁",
+                    "rc=%d 请求数=%d 出片段=%s 整集已清=%s"
+                    % (rc, Stub.hits, os.path.isfile(clip),
+                       not os.path.isfile(vdest)))
     finally:
         srv.shutdown()
         srv.server_close()

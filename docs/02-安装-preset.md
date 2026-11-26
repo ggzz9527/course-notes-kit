@@ -98,7 +98,7 @@ cordis 插件要把工具注册成命令，等于把每个工具的 schema 塞�
 | # | 判据 | 怎么验 |
 | --- | --- | --- |
 | 1 装上了 | 「模式」下拉有「笔记整理」；首轮工具数 ≈20（不是 175） | 新会话问「列一下你有哪些工具」 |
-| 2 自证 | 脚本链在这台机器上真能跑 | `python scripts/selfcheck.py` → 7/1/0；`python scripts/regress_frames.py` → 6/0；`python scripts/regress_download.py` → 6/0；三个对账 + `scrub_kit` 全 exit 0 |
+| 2 自证 | 脚本链在这台机器上真能跑 | `<装依赖的解释器> scripts/selfcheck.py` → 7/1/0；`python scripts/regress_frames.py` → 6/0；`python scripts/regress_download.py` → 8/0；三个对账 + `scrub_kit` 全 exit 0 |
 | 3 零运行逻辑 | preset 里没有运行逻辑、不注册新命令、工具白名单固定 | 数 `agent.cordis.yml` 里的 `- id:` 行；每加一个工具就重算 token |
 | 4 可回滚 | 删掉 patch 里那一段就卸载 | 见上面「三、失败怎么回滚」 |
 

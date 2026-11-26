@@ -580,7 +580,9 @@ def cmd_video(a):
             fresh = True
         rc = _cut_clips(d, dest, a.keep)
         if fresh:
-            _cleanup([dest])          # --keep 的意义就是别留整集
+            # --keep 的意义就是别留整集；身份文件跟着一起删，
+            # 否则下次会拿它去核一个已经不存在的文件
+            _cleanup([dest, _id_path(dest)])
         return rc
     if not a.force:
         good, why = verify_artifact(dest, want)
