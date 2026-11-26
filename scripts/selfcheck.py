@@ -87,9 +87,12 @@ head("3. 脚本可解析")
 # 同进程 compile() 就够：不起子进程、不写临时文件
 # （沙箱里 subprocess 管道和临时目录都可能被拦，这条坑本仓库自己踩过）
 bad = 0
+SCRIPTS = os.path.join(ROOT, "scripts")
 pyfiles = sorted(f for f in os.listdir(TOOLS) if f.endswith(".py"))
+pyfiles += [os.path.join("scripts", f) for f in sorted(os.listdir(SCRIPTS))
+            if f.endswith(".py")]          # scripts/ 也是用户直接跑的（自检/回归/打包）
 for f in pyfiles:
-    p = os.path.join(TOOLS, f)
+    p = os.path.join(ROOT, f) if f.startswith("scripts" + os.sep) else os.path.join(TOOLS, f)
     try:
         with open(p, encoding="utf-8") as fh:
             compile(fh.read(), p, "exec")

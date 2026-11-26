@@ -36,10 +36,11 @@ course-notes-kit/
 │   ├── gen_lib.py               生成 00-索引 / 00-课程地图 / 99-台账
 │   ├── course_rank_check.py     检验「按 green 分板书/人物」判据是否还成立
 │   └── llm.py                   OpenAI 兼容调用（可选，用你自己的模型）
-├── skills/course-selflearn/     讲义怎么写（SKILL.md + 5 篇 references）
+├── skills/course-selflearn/     讲义怎么写（SKILL.md + 6 篇 references）
+├── plugin/                      DSH 插件 bundle（skill 的另一种装法，见 docs/06）
 ├── preset/                      省 token 的 agent preset（可选）
-├── docs/                        流程、安装、踩坑、插件化决策
-└── scripts/                     安装/自检辅助
+├── docs/                        流程、安装、踩坑、插件化决策、跨-agent
+└── scripts/                     安装/自检辅助、打包（make_agent_package）、同步闸门
 ```
 
 ## 依赖
@@ -149,17 +150,39 @@ zip 分发的包没有 `.git`，就老实写 `unknown`——自证是描述，�
 ## 让 skill 出现在每个会话（可选，装成 DSH 插件）
 
 `skills/course-selflearn/` 是「本机有 clone」时用的。要让它在**每个会话**的技能目录里
-都出现、不必手工拷进 `<工作区>/.dsh/skills/`，就把 skill 装成一个小 bundle——
+都出现、不必手工拷进 `<工作区>/.dsh/skills/`，就从 `plugin/` 装成一个小 bundle——
 它只注册一个 skill provider，**不注册工具、不挂 hook**，所以每轮的固定开销一点不变。
 
-安装、验证、回滚见 `docs/02-安装-preset.md` 第六节。两条判据里第二条最容易被漏：
+```bash
+git clone https://github.com/ggzz9527/course-notes-kit.git
+# 然后在 DSH 会话里（<clone> 换成实际路径）：
+plugin_manager install_bundle target=<clone>/plugin
+```
+
+安装、验证、回滚见 `docs/06-插件与跨-agent.md`。两条判据里第二条最容易被漏：
 
 - skill 出现在目录里；**并且**它报的资源基址指向**插件包内**的 `skills/course-selflearn/`。
 
 只看第一条不算——手工副本还在的话，技能注册按「近的层赢」，插件没生效也照样能用。
 
+## 装到别的 agent（技能面板式 / Claude Code / 通用）
+
+同一个 skill 正文可以换成别的 agent 的装法：
+
+```bash
+python scripts/make_agent_package.py skill-panel  # 上传式技能包：dist/skill-panel/course-selflearn.zip
+python scripts/make_agent_package.py claude       # ~/.claude/skills/ 或 <项目>/.claude/skills/
+python scripts/make_agent_package.py generic      # SKILL.md 当系统提示
+```
+
+正文里出现的 `workflow` / `read_image` / `ops_bash` 是 DSH 的工具名，换 agent 只换调用名，
+对应表和降级方式在 `skills/course-selflearn/references/其它-agent-工具映射.md`；
+**脚本层判据（G1–G5、`note_check`、`--strict` 两档）不随 agent 变**。
+完整步骤见 `docs/06-插件与跨-agent.md`。
+
 为什么插件里放的是**逐字副本**而不是软链或直接读本仓库：软链与绝对路径都会把
-「kit 装在哪」焊死，正好违反 `SKILL.md` §七 的可移植条款。
+「kit 装在哪」焊死，正好违反 `SKILL.md` §七 的可移植条款。副本一致性由
+`python scripts/check_skill_sync.py` 守（退出码 0 才算同步）。
 
 ## 配置
 
