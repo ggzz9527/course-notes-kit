@@ -11,8 +11,10 @@
 换句话说——**判据必须能失败**：下面每个 FAIL 场景都对应一个曾经真实发生过的谎报。
 
 用法：
-  python scripts/regress_frames.py
-退出码：0 全过；1 有场景没过。
+  python scripts/regress_frames.py              # 人读
+  python scripts/regress_frames.py --json       # 机器读：stdout 一个 JSON，
+                                                # 含 ok/root/rev/total/failed/results
+退出码：0 全过；1 有场景没过（`--json` 不改变退出码，只加信息）。
 """
 import io
 import importlib.util
@@ -21,6 +23,8 @@ import shutil
 import subprocess
 import sys
 
+import _report as R          # 同目录：输出契约（--json + 自证跑的是哪棵树）
+
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 except Exception:
@@ -28,6 +32,7 @@ except Exception:
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
+SCRIPT = "regress_frames"
 PREP = os.path.join(ROOT, "tools", "course_prep.py")
 WORK = os.path.join(ROOT, "tools", "tmp", "_regress_frames")
 
@@ -37,17 +42,7 @@ _prep = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_prep)
 FFMPEG = _prep.FF
 
-RESULTS = []
-
-
-def ok(name, detail=""):
-    RESULTS.append((True, name, detail))
-    print("  [ OK ] %-42s %s" % (name, detail))
-
-
-def bad(name, detail=""):
-    RESULTS.append((False, name, detail))
-    print("  [FAIL] %-42s %s" % (name, detail))
+ok, bad = R.ok, R.bad      # 场景里照旧 (ok if cond else bad)(name, detail)
 
 
 def run_frames(d, env_extra=None):
@@ -92,7 +87,8 @@ def main():
     d = os.path.join(WORK, "ep")
     os.makedirs(d)
     video = os.path.join(d, "video.mp4")
-    print("== 抽帧产物归属回归（临时目录 %s）" % WORK)
+    R.banner("== 抽帧产物归属回归（%s rev %s，临时目录 %s）"
+             % (ROOT, R.git_rev(ROOT), WORK))
 
     # A 正向：3 秒视频 --every 1 → 3 帧
     make_video(video, 3)
@@ -136,18 +132,16 @@ def main():
     good = rc == 1 and "修法" in out and "Traceback" not in out
     (ok if good else bad)("F ffprobe 缺失 → exit 1 + 修法", "rc=%d" % rc)
 
-    nbad = sum(1 for r in RESULTS if not r[0])
-    print("\n" + "=" * 46)
-    print("通过 %d 项 / 失败 %d 项" % (len(RESULTS) - nbad, nbad))
-    if nbad == 0:
-        print("抽帧产物归属正常。")
-        return 0
-    print("有 FAIL —— 抽帧又开始「说成功但素材不对」，改完再发版。")
-    return 1
+    return R.finish(SCRIPT, ROOT, "抽帧产物归属正常。",
+                    "有 FAIL —— 抽帧又开始「说成功但素材不对」，改完再发版。", sep=46)
 
 
 if __name__ == "__main__":
     try:
-        sys.exit(main())
+        rc = main()
+    except BaseException as e:                      # noqa: BLE001
+        R.emit_error(SCRIPT, ROOT, "%s: %s" % (type(e).__name__, e))
+        raise
     finally:
         shutil.rmtree(WORK, ignore_errors=True)
+    sys.exit(rc)

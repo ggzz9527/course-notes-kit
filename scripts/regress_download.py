@@ -24,8 +24,10 @@ duration 比对（容差 1 s），并且与上次核过的字节数一致（`<de
 换个节点就从全绿变成一堆红，那种回归比没有还坏。
 
 用法：
-  python scripts/regress_download.py
-退出码：0 全过；1 有场景没过。
+  python scripts/regress_download.py            # 人读
+  python scripts/regress_download.py --json     # 机器读：stdout 一个 JSON，
+                                                # 含 ok/root/rev/total/failed/results
+退出码：0 全过；1 有场景没过（`--json` 不改变退出码，只加信息）。
 """
 import contextlib
 import http.server
@@ -39,6 +41,8 @@ import subprocess
 import sys
 import threading
 
+import _report as R          # 同目录：输出契约（--json + 自证跑的是哪棵树）
+
 try:
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 except Exception:
@@ -46,6 +50,7 @@ except Exception:
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
+SCRIPT = "regress_download"
 PREP = os.path.join(ROOT, "tools", "course_prep.py")
 WORK = os.path.join(ROOT, "tools", "tmp", "_regress_download")
 BV, EP = "BV1regressdl", 1
@@ -70,6 +75,7 @@ def _ensure_dir(p, tries=8):
         except OSError as e:
             last = e
             _t.sleep(0.15 * (i + 1))
+    R.emit_error(SCRIPT, ROOT, "建不了临时目录 %s：%s" % (p, last))
     sys.exit("× 建不了临时目录 %s：%s\n"
              "  修法：把临时目录挪开（换个非 Temp 的克隆位置），或等几秒重跑。"
              % (p, last))
@@ -85,17 +91,7 @@ _prep = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_prep)
 FFMPEG, FFPROBE = _prep.FF, _prep.FP
 
-RESULTS = []
-
-
-def ok(name, detail=""):
-    RESULTS.append((True, name, detail))
-    print("  [ OK ] %-46s %s" % (name, detail))
-
-
-def bad(name, detail=""):
-    RESULTS.append((False, name, detail))
-    print("  [FAIL] %-46s %s" % (name, detail))
+ok, bad = R.ok, R.bad      # 场景里照旧 ok(name, detail)；JSON 模式下走 stderr
 
 
 def _parse_range(v, total):
@@ -224,7 +220,8 @@ def main():
     shutil.rmtree(WORK, ignore_errors=True)
     _ensure_dir(os.environ["COURSE_MEDIA"])
     _ensure_dir(os.environ["COURSE_TMP"])
-    print("== 下载产物完整性回归（临时目录 %s）" % WORK)
+    R.banner("== 下载产物完整性回归（%s rev %s，临时目录 %s）"
+             % (ROOT, R.git_rev(ROOT), WORK))
 
     # 造真音频 + 真视频当源站内容；时长从 ffprobe 读回来，不写死
     SRC = os.path.join(WORK, "src.m4a")
@@ -410,18 +407,17 @@ def main():
         srv.shutdown()
         srv.server_close()
 
-    nbad = sum(1 for r in RESULTS if not r[0])
-    print("\n" + "=" * 50)
-    print("通过 %d 项 / 失败 %d 项" % (len(RESULTS) - nbad, nbad))
-    if nbad == 0:
-        print("下载产物完整。")
-        return 0
-    print("有 FAIL —— 下载又开始「说成功但文件是残的」，改完再发版。")
-    return 1
+    return R.finish(SCRIPT, ROOT, "下载产物完整。",
+                    "有 FAIL —— 下载又开始「说成功但文件是残的」，改完再发版。")
 
 
 if __name__ == "__main__":
     try:
-        sys.exit(main())
+        rc = main()
+    except BaseException as e:                      # noqa: BLE001
+        # 崩了也要给结论：--json 下输出 {"ok": false, "error": ...}
+        R.emit_error(SCRIPT, ROOT, "%s: %s" % (type(e).__name__, e))
+        raise
     finally:
         shutil.rmtree(WORK, ignore_errors=True)
+    sys.exit(rc)

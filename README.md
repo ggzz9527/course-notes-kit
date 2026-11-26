@@ -119,6 +119,27 @@ mirror 与直链全挂、完整文件重跑不重下、半截文件不许继承�
 为什么两个回归都不并进 `selfcheck.py`：selfcheck 的契约是「不联网、不下载、**不改任何文件**」，
 而这两个回归都必须真写文件——并进去就破了它的契约，下一个会话会不敢跑 selfcheck。
 
+两个回归都支持 `--json`（退出码不变，只加信息）：
+
+```bash
+python scripts/regress_frames.py --json
+python scripts/regress_download.py --json
+```
+
+```json
+{"ok": true, "script": "regress_download", "root": "...", "rev": "e1a91ea",
+ "total": 8, "failed": 0,
+ "results": [{"ok": true, "name": "A 206 少给一段 → exit 1、不落盘", "detail": "..."}]}
+```
+
+进度行在 `--json` 下走 stderr，所以 `--json 2>/dev/null` 拿到的是纯 JSON；
+崩了也照样给结论（`{"ok": false, ..., "error": "TypeError: ..."}`），不让调用方去猜 traceback。
+
+**为什么结果里要带 `root` 和 `rev`**：判据最危险的失效方向不是误报 FAIL，是在**错的树上**
+误报 PASS——在别人 fork、旧版本目录、或自己的开发副本上跑一遍，然后签字说「发版前验过了」。
+把跑的是哪棵树写进结果，读的人一眼就能对上。`rev` 是直接读 `.git/HEAD` 拿的（不调 `git`）：
+zip 分发的包没有 `.git`，就老实写 `unknown`——自证是描述，不是闸门。
+
 ## 配置
 
 **本工具链不绑定任何机器路径**，全部走环境变量（都有默认值）：
