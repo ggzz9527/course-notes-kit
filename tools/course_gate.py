@@ -186,12 +186,14 @@ def _declared_media(ep_dir):
     """
     hits = set()
     # 讲义可能分篇（10-讲义-上/下.md），故按通配扫；2026-11-25 前只认单篇。
+    # 2026-11-26 真课自检加：根目录**所有** .md 都扫。
+    # 起因：另一门课三集的媒体路径只写在 `素材清单.md` 里，原来只认 10-讲义*/00-知识点/90-复查，
+    # 于是 rects 报「按集号找不到媒体目录」——声明明明在，工具自己没看。
     lec = []
     if os.path.isdir(ep_dir):
         lec = [os.path.join(ep_dir, x) for x in sorted(os.listdir(ep_dir))
-               if x.startswith("10-讲义") and x.endswith(".md")]
-    for fp in lec + [os.path.join(ep_dir, "00-知识点.md"),
-                     os.path.join(ep_dir, "90-复查")]:
+               if x.endswith(".md") and os.path.isfile(os.path.join(ep_dir, x))]
+    for fp in lec + [os.path.join(ep_dir, "90-复查")]:
         files = []
         if os.path.isdir(fp):
             files = [os.path.join(fp, x) for x in os.listdir(fp) if x.endswith(".md")]
