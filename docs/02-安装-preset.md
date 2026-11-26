@@ -113,7 +113,7 @@ preset 的判据 3 和下面这张表里所有的数。
 
 | # | 判据 | 怎么验 |
 | --- | --- | --- |
-| 1 装上了 | 「模式」下拉有「笔记整理」；首轮工具数 ≈20（不是 175） | 新会话问「列一下你有哪些工具」 |
+| 1 装上了 | 「模式」下拉有「笔记整理」；首轮工具数 ≈20（不是 175） | 新会话问「列一下你有哪些工具」；看不到下拉时用下面的命令行判据 |
 | 2 自证 | 脚本链在这台机器上真能跑 | `<装依赖的解释器> scripts/selfcheck.py` → 7/1/0；`python scripts/regress_frames.py` → 6/0；`python scripts/regress_download.py` → 8/0；三个对账 + `scrub_kit` 全 exit 0 |
 | 3 零运行逻辑 | preset 里没有运行逻辑、不注册新命令、工具白名单固定 | `grep -c '^\s*- id:' preset/agent.cordis.yml` → **21**（期望值写在这里，因为只给方法不给数，数出 22 也没人知道该不该报警）；每加一个工具就重算 token |
 | 4 可回滚 | 删掉 patch 里那一段就卸载 | 见上面「三、失败怎么回滚」 |
@@ -122,6 +122,18 @@ preset 的判据 3 和下面这张表里所有的数。
 （ffmpeg / faster-whisper）时会话看起来正常，一 `fetch` 就炸——那时候不容易判断是
 preset 的问题还是环境的问题。先跑 `selfcheck`，把「这台机器能不能用」和
 「preset 装没装对」分开验。
+
+**判据 1 的命令行替代**（看不到「模式」下拉时用这个；它能证明「注册了」，不能证明「选对了」）：
+
+```bash
+grep -c "id: preset-note-keeper" ~/.dsh/profiles/desktop/cordis.yml        # → 1
+awk 'f&&/^- id:/{exit} /- id: preset-note-keeper/{f=1} f' ~/.dsh/profiles/desktop/cordis.yml | grep -c '^\s*- id:'
+# → 22（含 preset 行本身，即 21 个子条目，与 preset/agent.cordis.yml 的 21 条对得上）
+```
+
+为什么这两条能替代：`cordis.yml` 是 boot 之后**合成出来的实配置**——0 就表示根本没注册，
+下拉里必然没有；22 对得上 21 说明挂上去的就是那份完整清单，不是一份缺条的副本。
+**工具数仍然只能新会话亲测**：grep 数不出工具。
 
 ## 六、装 skill bundle（可选）
 
