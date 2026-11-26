@@ -36,9 +36,9 @@ course-notes-kit/
 │   ├── gen_lib.py               生成 00-索引 / 00-课程地图 / 99-台账
 │   ├── course_rank_check.py     检验「按 green 分板书/人物」判据是否还成立
 │   └── llm.py                   OpenAI 兼容调用（可选，用你自己的模型）
-├── skills/course-selflearn/     讲义怎么写（SKILL.md + 4 篇 references）
+├── skills/course-selflearn/     讲义怎么写（SKILL.md + 5 篇 references）
 ├── preset/                      省 token 的 agent preset（可选）
-├── docs/                        流程、安装、踩坑
+├── docs/                        流程、安装、踩坑、插件化决策
 └── scripts/                     安装/自检辅助
 ```
 
@@ -146,6 +146,21 @@ python scripts/regress_download.py --json
 把跑的是哪棵树写进结果，读的人一眼就能对上。`rev` 是直接读 `.git/HEAD` 拿的（不调 `git`）：
 zip 分发的包没有 `.git`，就老实写 `unknown`——自证是描述，不是闸门。
 
+## 让 skill 出现在每个会话（可选，装成 DSH 插件）
+
+`skills/course-selflearn/` 是「本机有 clone」时用的。要让它在**每个会话**的技能目录里
+都出现、不必手工拷进 `<工作区>/.dsh/skills/`，就把 skill 装成一个小 bundle——
+它只注册一个 skill provider，**不注册工具、不挂 hook**，所以每轮的固定开销一点不变。
+
+安装、验证、回滚见 `docs/02-安装-preset.md` 第六节。两条判据里第二条最容易被漏：
+
+- skill 出现在目录里；**并且**它报的资源基址指向**插件包内**的 `skills/course-selflearn/`。
+
+只看第一条不算——手工副本还在的话，技能注册按「近的层赢」，插件没生效也照样能用。
+
+为什么插件里放的是**逐字副本**而不是软链或直接读本仓库：软链与绝对路径都会把
+「kit 装在哪」焊死，正好违反 `SKILL.md` §七 的可移植条款。
+
 ## 配置
 
 **本工具链不绑定任何机器路径**，全部走环境变量（都有默认值）：
@@ -219,6 +234,7 @@ python tools/gen_lib.py course-notes
 实测首步基线 74,053 token → 约 8,000（工具 schema 70,700 → 3,633）。
 
 安装方式见 `docs/02-安装-preset.md`。**不装也能用本仓库的脚本和 skill**，只是每轮会重发一份用不到的 schema。
+（skill 本身的安装是另一件事：见上面「让 skill 出现在每个会话」——两件事共用 `docs/02`，但互不依赖。）
 
 ## 许可
 
