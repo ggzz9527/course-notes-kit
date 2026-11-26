@@ -556,7 +556,7 @@ def main():
     p.add_argument("--near", type=int, default=60)
     p.add_argument("--tight", type=int, default=10)
     p.add_argument("--strict", action="store_true",
-                   help="G5 拆篇判据从 WARN 升级为 FAIL（新集交付时用）")
+                   help="G1 标尺 + G5 拆篇判据从 WARN 升级为 FAIL（新集交付时用）")
     p.set_defaults(func=cmd_report)
 
     a = ap.parse_args(_normalize_argv(sys.argv[1:]))

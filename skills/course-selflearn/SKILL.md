@@ -544,7 +544,7 @@ ep16 花了和 ep15 一样多的轮次，但内容更简单——钱全花在"�
 | 写正文前 | `course_budget.py plan <集> K1_… K12_…` | 先给每节配额，避免写超再整段重写 |
 | 写正文后 | `course_budget.py used <集>` | 比 `note_check` 早一步看到哪节超标、超多少 |
 | **挑帧前闸门** | `course_gate.py times <媒体目录> "时刻表"` | 剔掉超出片长的时刻，防止整批子代理空转（ep23 白跑 12 个） |
-| **裁图前闸门** | `course_gate.py ruler <集目录>` | 查「挑帧记录」里到底有没有量过板面矩形（ep23 漏了，重裁 6 次） |
+| **裁图前闸门** | `course_gate.py ruler <集目录> --strict` | 查「挑帧记录」里到底有没有量过板面矩形（ep23 漏了，重裁 6 次）。**新集带 `--strict`**；历史集巡检才用默认档（只 WARN） |
 | **收工前对账** | `course_gate.py report <集目录> --read-images N` | 一次核 G1 标尺 / G3 读图预算 / 图块与 assets 双向对齐 |
 
 **`brief --times` 必须先对齐实际帧范围（2026-11-24 ep23 踩）**：
