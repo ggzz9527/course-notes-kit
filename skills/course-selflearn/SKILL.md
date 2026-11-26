@@ -102,6 +102,12 @@ whenToUse: 用户给来一门课的链接/视频/讲义/目录，要求"整理�
 3. `course_prep.py frames <目录> --at 300,600,900` 按知识点时间点抽帧（`--every 10` 才是等间隔素材池）；
 4. `course_prep.py verify <目录>` 出 `frames.csv`。
 
+> **媒体目录布局：新工具只吃这一种** —— `<BV>-epN/pN/frames/f_<秒>.png` + `frames.csv` + `shots.log`。
+> 旧素材是 `frames/f0001.jpg`（第 N 帧，按序号命名）。**`f_<秒>` 与 `f0001` 不是一回事**：
+> 前者把秒写进文件名，后者只说明它是第几张。所以 `times` / `rank` / `scan` / `brief`
+> 对旧目录一律读不了（`times` 会直接说「有文件，但没有 f_<秒>.png」）。
+> 要让新工具接管旧集，只能**重抽帧**；否则旧集继续走手工挑帧流程。这条是硬边界，不是建议。
+
 四种挑帧法：
 1. **排序表优先**（2026-11-22 起首选）：`course_run.py rank <媒体目录> --near 1530,25:30,1740`
    —— 它把每一帧按「投影页 / 板书 / 空板 / 非板面 / 人物镜头」分类，给出板面占比、亮度、遮挡、
@@ -440,7 +446,7 @@ ep23 我把这条当成"建议"，结果重裁 6 次、读了 26 张图，单项
 
 | 闸门 | 判据（机器可查） | 不通过时怎么办 |
 | --- | --- | --- |
-| **G1 标尺已量** | `00-知识点.md` 里有一条"板面矩形"记录（含 `x1,y1,x2,y2` 与它取自哪张帧） | 没记录就不许跑 `shots` |
+| **G1 标尺已量** | `00-知识点.md` 里有一条"板面矩形"记录（含 `x1,y1,x2,y2` 与它取自哪张帧） | 没记录就不许跑 `shots`。`course_gate.py ruler` 默认只 WARN（历史集），`--strict` 才 FAIL（新集交付） |
 | **G2 无二次裁切** | 对同一时间点 **±10s** 内（`--tight 10`）、或同一块板面区域，`shots` 只调用过一次 | 出现第二次 = 没量标尺，**停下重新量**，不许再猜 |
 | **G3 读图数 ≤ 歧义点+1** | 本节 ②-B 的"歧义点数 + 1" | 超了说明在读"看清细节"，一律不算歧义点 |
 | **G4 裁完先看缩略图再读全图** | 每张裁切图先用 `PIL` 缩到 1/3 出 JPEG 预览（约 30 KB）确认框对了，再 `read_image` 读原裁切 | 直接读原裁切＝赌框对了，赌错就要重裁＋重读两道成本 |
@@ -471,12 +477,14 @@ python tools/course_run.py look <媒体目录> "<最早时刻>" --full --no-scan
 
 ```bash
 python tools/course_gate.py times  <媒体目录> "220,900,2980,3450"
-python tools/course_gate.py ruler  <集目录>
+python tools/course_gate.py ruler  <集目录>            # 加 --strict 才把缺记录判 FAIL
 python tools/course_gate.py rects  <集目录>   # G2，读 shots.log
 python tools/course_gate.py report <集目录> --read-images 6 [--strict]
 # 退出码 0 = 全过；1 = 有闸门未过（会打印是哪一条、怎么修）
-# --strict 只影响 G5（拆篇）：不带它时 ≥15 点单篇只报 WARN，带了才 FAIL
+# --strict 影响 G1（标尺）与 G5（拆篇）：不带它时缺记录 / ≥15 点单篇只报 WARN，带了才 FAIL。
+#   历史集不可能回溯补记录（G1 从 ep23 才定稿），所以默认 WARN；**新集交付必须带 --strict**。
 # --read-images N 填【实际读了几张】，不是预算上限；G3 拿它和「歧义点数+1」比
+# 注意 G3 没有历史档位：老集缺「歧义点：N」声明时 report 仍会 rc=1，这是交付闸门的本意。
 ```
 
 **G2 的数据从哪来**：`course_run.py shots` 从 2026-11-24 起，每次裁图都往
@@ -487,20 +495,23 @@ python tools/course_gate.py report <集目录> --read-images 6 [--strict]
 `--tight 10` 是用 ep23 真值校准的：10 秒抓出 2 对真重裁、0 误报；30 秒会多出 2 对
 不同板面的误报。**宁漏不误报**——误报会让人习惯性忽略这条闸门。
 
-**闸门自己也要有回归**（改了 `course_gate.py`，用真集反测这四条，发布包不带夹具脚本）：
+**闸门自己也要有回归**（改了 `course_gate.py`，用真集反测这五条，发布包不带夹具脚本）：
 
 ```bash
 # 1) G2 真抓得到：挑一集已知重裁过的，必须报出来
 python tools/course_gate.py rects <集目录> --tight 10
 # 2) G3 不许被绕过：不给 read_images 必须 rc≠0（第一版就是这里 return 0）
 python tools/course_gate.py budget <集目录>
-# 3) times 容错：负值与越界时刻要被剔除，不能被 argparse 当选项吃掉
+# 3) times 容错：负值与越界时刻要被报成可读错误，不能被 argparse 当选项吃掉
 python tools/course_gate.py times <媒体目录> "-5,100,99999"
 # 4) G5 两种档位都要对：不带 --strict 只 WARN，带 --strict 必须 FAIL
 python tools/course_gate.py parts <集目录> --strict
+# 5) G1 两种档位都要对（2026-11-26 加）：缺记录时默认 WARN/rc=0，--strict 必须 FAIL/rc=1
+python tools/course_gate.py ruler <集目录>
+python tools/course_gate.py ruler <集目录> --strict
 ```
 
-**判据**：四条里任何一条「该报没报」或「该 FAIL 却 rc=0」，闸门就是空壳，别信它的 OK。
+**判据**：五条里任何一条「该报没报」或「该 FAIL 却 rc=0」，闸门就是空壳，别信它的 OK。
 
 > 为什么闸门要配回归：第一版 `course_gate.py` 我写完就报"改好了"，实际上
 > **G2 只在文档里存在、代码里没实现**，G3 缺参数时还 `return 0`（闸门能被绕过），

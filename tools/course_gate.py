@@ -138,22 +138,32 @@ RECT_RE = re.compile(r"x1\s*,\s*y1\s*,\s*x2\s*,\s*y2\s*=\s*(\d+)\s*,\s*(\d+)\s*,
 
 
 def cmd_ruler(a):
+    """G1：板面矩形量过没有。
+
+    2026-11-26 起分两档，与 G5 同一套语义：
+      默认 —— 缺记录只 WARN（历史集不可能回溯补，30 集里 25 集是这种情况）；
+      --strict —— 缺记录 FAIL。**新集交付必须带 --strict**（docs/02 的判据里写着）。
+    为什么不再默认 FAIL：全库永远是红的闸门等于没有闸门，红会被习惯性忽略。
+    """
+    strict = bool(getattr(a, "strict", False))
+    verdict = "FAIL" if strict else "WARN"
+    tail = "" if strict else "（历史集允许缺；新集交付要带 --strict）"
     kp = os.path.join(a.ep_dir, "00-知识点.md")
     if not os.path.isfile(kp):
-        print("[gate] 没找到 %s —— 先出知识点卡" % kp)
-        return 1
+        print("[gate] G1 %s：没找到 %s —— 先出知识点卡%s" % (verdict, kp, tail))
+        return 1 if strict else 0
     s = io.open(kp, encoding="utf-8").read()
     if RULER_HINT not in s:
-        print("[gate] G1 未过：00-知识点.md 里没有「## 挑帧记录」一节")
+        print("[gate] G1 %s：00-知识点.md 里没有「## 挑帧记录」一节%s" % (verdict, tail))
         print("       （分篇时「挑帧记录」也写在 00-知识点.md 里，不要拆）")
         print("       修法：读一张整帧量出板面矩形，按下面格式记进去")
         print("       ## 挑帧记录")
         print("       - 板面矩形（取自 f_XXXX）：x1,y1,x2,y2 = 70,50,1120,550")
-        return 1
+        return 1 if strict else 0
     rects = RECT_RE.findall(s)
     if not rects:
-        print("[gate] G1 未过：有「挑帧记录」但没写矩形（x1,y1,x2,y2 = ...）")
-        return 1
+        print("[gate] G1 %s：有「挑帧记录」但没写矩形（x1,y1,x2,y2 = ...）%s" % (verdict, tail))
+        return 1 if strict else 0
     print("[gate] G1 通过：已量到 %d 组板面矩形" % len(rects))
     for r in rects:
         print("       x1,y1,x2,y2 = %s" % ",".join(r))
@@ -514,8 +524,10 @@ def main():
     p.add_argument("times")
     p.set_defaults(func=cmd_times)
 
-    p = sub.add_parser("ruler", help="查标尺是否已量")
+    p = sub.add_parser("ruler", help="查标尺是否已量（默认缺记录只 WARN）")
     p.add_argument("ep_dir")
+    p.add_argument("--strict", action="store_true",
+                   help="把 WARN 升级为 FAIL（新集交付时用）")
     p.set_defaults(func=cmd_ruler)
 
     p = sub.add_parser("budget", help="核读图预算")
