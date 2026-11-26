@@ -154,7 +154,7 @@ L += ["", "## 怎么读这张表", "",
       "- **讲义 ❌**：这一集还没成稿（可能是素材已到、还没写，或根本没抓）。",
       "- **status = draft**：稿子写完，等复查；**reviewed**：复查通过。",
       "- **图 0**：正文里没有引用任何原片截图，按规范这种图要么补讲要么删。", ""]
-open(os.path.join(BASE, "00-课程地图.md"), "w", encoding="utf-8").write("\n".join(L))
+open(os.path.join(BASE, "00-课程地图.md"), "w", encoding="utf-8", newline="\n").write("\n".join(L))
 
 # ---- 00-索引.md ----
 L = ["# %s · 索引" % COURSE_NAME, "",
@@ -174,7 +174,7 @@ for r in rows:
         for k in r["kps"]:
             L.append("  - `%s`" % k)
     L += ["", ""]
-open(os.path.join(BASE, "00-索引.md"), "w", encoding="utf-8").write("\n".join(L))
+open(os.path.join(BASE, "00-索引.md"), "w", encoding="utf-8", newline="\n").write("\n".join(L))
 
 # ---- 99-台账.md ----
 total = len(rows)
@@ -218,7 +218,7 @@ if bad:
 else:
     L.append("- 无")
 L.append("")
-open(os.path.join(BASE, "99-台账.md"), "w", encoding="utf-8").write("\n".join(L))
+open(os.path.join(BASE, "99-台账.md"), "w", encoding="utf-8", newline="\n").write("\n".join(L))
 print("generated:", total, "集,", done, "有讲义")
 
 # 运行身份（2026-11-25 二修）：这份索引到底是哪次跑出来的？
@@ -251,7 +251,7 @@ try:
                "code_rev": _code_rev(),
                "course_json_sha1_12": _fp,
                "episodes": total, "with_lecture": done},
-              open(os.path.join(BASE, ".genlib-manifest.json"), "w", encoding="utf-8"),
+              open(os.path.join(BASE, ".genlib-manifest.json"), "w", encoding="utf-8", newline="\n"),
               ensure_ascii=False, indent=1)
 except Exception as _e:
     # 不吞异常：身份文件写不出来是要知道的（但它不该拦住索引生成，故只警告）
