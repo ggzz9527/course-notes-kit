@@ -6,13 +6,17 @@
 并给出明确的「缺什么、怎么补」。
 
 用法：
-  python scripts/selfcheck.py
-退出码：0 全通过（允许 warn）；1 有 FAIL。
+  python scripts/selfcheck.py             # 人读
+  python scripts/selfcheck.py --json      # 机器读：stdout 一个 JSON，含
+                                          # ok/root/rev/total/failed/warnings/results
+退出码：0 无 FAIL（允许 warn）；1 有 FAIL。`--json` 不改变退出码，只加信息。
 """
 import os
 import shutil
 import subprocess
 import sys
+
+import _report as R          # 同目录：输出契约（--json + 自证跑的是哪棵树）
 
 # Windows 控制台默认 GBK，中文输出会乱码；统一转 UTF-8（失败就算了，不影响逻辑）
 try:
@@ -24,31 +28,22 @@ except Exception:
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 TOOLS = os.path.join(ROOT, "tools")
+SCRIPT = "selfcheck"
 
-FAILS, WARNS, OKS = [], [], []
-
-
-def ok(msg):
-    OKS.append(msg)
-    print("  [ OK ] %s" % msg)
-
-
-def warn(msg):
-    WARNS.append(msg)
-    print("  [warn] %s" % msg)
+# 三态走共用契约：ok / warn / fail。**警告不算失败**——selfcheck 的正常态就带一条警告。
+ok, warn = R.ok, R.warn
 
 
 def fail(msg):
-    FAILS.append(msg)
-    print("  [FAIL] %s" % msg)
+    R.bad(msg)
 
 
 def head(t):
-    print("\n== %s" % t)
+    R.banner("\n== %s" % t)
 
 
 head("1. Python 与依赖")
-print("  python: %s" % sys.version.split()[0])
+R.banner("  python: %s" % sys.version.split()[0])
 if sys.version_info < (3, 10):
     fail("Python 需要 3.10+（当前 %s）" % sys.version.split()[0])
 else:
@@ -107,8 +102,10 @@ if not bad:
 head("4. 目录与环境变量")
 out = os.environ.get("COURSE_OUT") or os.path.join(ROOT, "course-notes")
 media = os.environ.get("COURSE_MEDIA") or os.path.join(TOOLS, "media", "course")
-print("  COURSE_OUT   = %s %s" % (out, "(已存在)" if os.path.isdir(out) else "(尚未创建)"))
-print("  COURSE_MEDIA = %s %s" % (media, "(已存在)" if os.path.isdir(media) else "(尚未创建)"))
+R.banner("  COURSE_OUT   = %s %s"
+         % (out, "(已存在)" if os.path.isdir(out) else "(尚未创建)"))
+R.banner("  COURSE_MEDIA = %s %s"
+         % (media, "(已存在)" if os.path.isdir(media) else "(尚未创建)"))
 
 head("5. 模型配置（可选）")
 cj = os.path.join(TOOLS, "llm.json")
@@ -127,11 +124,11 @@ else:
     warn("没有 tools/llm.json —— 只影响 course_digest.py --llm；"
          "复制 tools/llm.example.json 再填你自己的")
 
-print("\n" + "=" * 46)
-print("通过 %d 项 / 警告 %d 项 / 失败 %d 项" % (len(OKS), len(WARNS), len(FAILS)))
-if FAILS:
-    print("\n先修掉这些再用：")
-    for f in FAILS:
-        print("  - %s" % f)
-    sys.exit(1)
-print("可以开工。下一步：python tools/course_run.py fetch <BV号> <集号>")
+rc = R.finish(SCRIPT, ROOT,
+              "可以开工。下一步：python tools/course_run.py fetch <BV号> <集号>",
+              "", sep=46, cols="owf")
+if rc:
+    R.banner("\n先修掉这些再用：")
+    for m in R.failures():
+        R.banner("  - %s" % m)
+sys.exit(rc)

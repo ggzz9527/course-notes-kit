@@ -119,18 +119,24 @@ mirror 与直链全挂、完整文件重跑不重下、半截文件不许继承�
 为什么两个回归都不并进 `selfcheck.py`：selfcheck 的契约是「不联网、不下载、**不改任何文件**」，
 而这两个回归都必须真写文件——并进去就破了它的契约，下一个会话会不敢跑 selfcheck。
 
-两个回归都支持 `--json`（退出码不变，只加信息）：
+三个闸门脚本都支持 `--json`（退出码不变，只加信息）：
 
 ```bash
+python scripts/selfcheck.py --json
 python scripts/regress_frames.py --json
 python scripts/regress_download.py --json
 ```
 
 ```json
 {"ok": true, "script": "regress_download", "root": "...", "rev": "e1a91ea",
- "total": 8, "failed": 0,
- "results": [{"ok": true, "name": "A 206 少给一段 → exit 1、不落盘", "detail": "..."}]}
+ "total": 8, "failed": 0, "warnings": 0,
+ "results": [{"status": "ok", "ok": true,
+              "name": "A 206 少给一段 → exit 1、不落盘", "detail": "..."}]}
 ```
+
+每条结果是三态 `status`（`ok` / `warn` / `fail`）；`ok` 字段的含义是**没失败**，
+所以 `warn` 既不会让 `ok` 变 false，也不会让退出码变 1——**警告不算失败**
+（selfcheck 的正常态就带一条警告）。
 
 进度行在 `--json` 下走 stderr，所以 `--json 2>/dev/null` 拿到的是纯 JSON；
 崩了也照样给结论（`{"ok": false, ..., "error": "TypeError: ..."}`），不让调用方去猜 traceback。
