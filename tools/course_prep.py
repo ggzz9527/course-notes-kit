@@ -33,13 +33,34 @@ import urllib.request
 ROOT = os.path.dirname(os.path.abspath(__file__))
 PROJ = os.path.dirname(ROOT)
 
+
+def _resolve_python():
+    """取「能跑 yt-dlp 的那个解释器」。
+
+    优先级：COURSE_PY > 包内 venv（存在才用）> 当前解释器。
+
+    为什么 venv 排在 sys.executable 前面：本机常直接用系统 python 敲
+    `python tools/course_prep.py audio <BV> <集>` 绕开 course_run.py，而系统 python
+    没装 yt-dlp。PY 原来写死 venv 路径，改成可移植写法之后这个退化冒出来了——
+    同一份代码在本机反而变脆，那不算可移植。
+    别人的机器上没有 tools/venv，就老老实实用 sys.executable（README 的装法就是那样）。
+    """
+    p = os.environ.get("COURSE_PY")
+    if p:
+        return p
+    venv = os.path.join(ROOT, "venv", "Scripts", "python.exe")
+    return venv if os.path.exists(venv) else sys.executable
+
+
 # 可移植配置（不绑定任何机器路径）：
 #   COURSE_MEDIA   素材根目录，默认 ./tools/media/course
-#   COURSE_PY      python 解释器，默认当前解释器（需已装 yt-dlp）
+#   COURSE_PY      python 解释器，默认包内 venv（有的话），否则当前解释器
 #   COURSE_FFMPEG  ffmpeg 路径，默认 ./bin/ffmpeg.exe，找不到就退回 PATH 里的 ffmpeg
 MEDIA = (os.environ.get("COURSE_MEDIA")
          or os.path.join(PROJ, "tools", "media", "course"))
-PY = os.environ.get("COURSE_PY") or sys.executable
+PY = _resolve_python()
+
+
 def _resolve_tool(env_key, local_name, cmd_name):
     """外部工具的单一来源：环境变量 > 包内 bin/ > PATH 命令名。
 
