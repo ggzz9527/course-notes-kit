@@ -1,0 +1,23 @@
+{
+  "name": "@local/dsh-course-selflearn",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Ships the course-selflearn skill (SKILL.md + 5 references) as a config-only DSH bundle: one skill-provider row over this package's skills/ directory. No code, no tools, no hooks.",
+  "exports": {
+    "./package.json": "./package.json",
+    "./skills/*": "./skills/*"
+  },
+  "files": [
+    "cordis.patch.yml",
+    "skills",
+    "README.md"
+  ],
+  "dsh": {
+    "category": "skill",
+    "displayName": "课程自学讲义",
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

@@ -1,0 +1,41 @@
+# course-selflearn bundle patch —— 一行 insert，把 skill 装进全局技能层。
+#
+# 为什么是 config-only（没有 index.js）：
+#   这个 bundle 唯一要做的事，是让官方的文件系统 skill provider 去读本包自带的
+#   skills/ 目录。官方 provider 已经会解析 frontmatter、校验 skill 名、按需加载
+#   SKILL.md —— 自己再写一遍只会多一条会漂的代码路径。
+#
+#   还有一条实测出来的硬理由：本包是用 `link:` 装进 profile 的，Node 对裸模块名
+#   按**真实路径**解析，而链接包的真实路径在工作区里，那里没有 @deepseek-ai/*。
+#   于是 index.js 里写 `import ... from '@deepseek-ai/dsh-skill-filesystem'` 会直接
+#   ERR_MODULE_NOT_FOUND（实测：1 entry did not activate）。把导入交给 loader 才行：
+#   它用 profile 的 baseUrl 去解析内建包，这条路是通的（本工作区另一个 link 装的
+#   bundle 引用 @deepseek-ai/dsh-mcp-client 就是靠它工作的）。
+#
+# 为什么必须是 `- insert:`：裸写 `- id:` 会被 boot 当成「覆盖某条已存在的行」，
+# 找不到目标就 warn + skip，新行根本进不来（docs/02 里踩过并记下了）。
+#
+# !!js 在这一行**自己的 context** 里求值：loader 的求值器是
+#   new Function('ctx','expr', 'with (ctx) { return eval(expr) }')
+# 而 ctx.baseUrl 是所在 cordis.yml 的目录——对本行就是 profile 目录。所以：
+#   createRequire(<profile 目录>) → 解析本包 package.json → 取它的目录 → 拼 skills
+# 结果与「本包装到哪个目录」无关，配置里不出现任何机器路径。
+# 表达式里全部用 process.getBuiltinModule：它在独立 eval 作用域里执行，
+# 没有 import 绑定，只有内置模块可用。
+- insert:
+    - id: course-selflearn
+      name: '@deepseek-ai/dsh-skill-filesystem'
+      config:
+        # 只读本包 skills/，不扫项目内/用户级默认根：别的根由别的 provider 负责。
+        # 混在一起会让「这条 skill 到底谁供的」不可观测，而那正是回滚实验唯一的判据。
+        includeDefaultRoots: false
+        customSkillDirs:
+          - !!js >-
+            process.getBuiltinModule('node:path').join(
+              process.getBuiltinModule('node:path').dirname(
+                process.getBuiltinModule('node:module')
+                  .createRequire(baseUrl)
+                  .resolve('@local/dsh-course-selflearn/package.json')
+              ),
+              'skills'
+            )
